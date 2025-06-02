@@ -1,186 +1,232 @@
-# Foundation-Sec-8B Risk & PII Analyzer
+# Foundation-Sec-8B Fine-Tuning for Risk Analysis and PII Detection
 
-A suite of tools for fine-tuning and using the Foundation-Sec-8B model for security risk categorization and PII detection.
+This repository contains tools for fine-tuning the Foundation-Sec-8B model to perform two critical security tasks:
+1. **Security Risk Categorization** - Classify security findings into 12 standardized macro risk categories and their specific themes
+2. **PII Detection and Classification** - Identify personally identifiable information and classify it into protection categories (PC0/PC1/PC3)
 
-## Overview
+## 🚀 Quick Start
 
-This project provides tools to:
+### Installation
 
-1. **Fine-tune** the Foundation-Sec-8B model on a unified taxonomy for both risk categorization and PII classification
-2. **Analyze** security risks and automatically categorize them
-3. **Detect PII** in text and classify it into protection categories (PC0, PC1, PC3)
+```bash
+# Clone the repository
+git clone <repository-url>
+cd Foundation-Sec-8B_finetunned
 
-The tools can process any text and automatically determine whether to perform risk analysis or PII detection.
-
-## Components
-
-The project consists of two main components:
-
-1. **risk_fine_tuner.py**: For fine-tuning a unified model that handles both risk taxonomy and PII classification
-2. **risk_inference.py**: For using the fine-tuned model to analyze text (automatically detecting the appropriate task)
-
-## Risk Taxonomy & PII Classification
-
-The system uses:
-
-### Risk Categorization
-- 12 Macro Risk Categories
-- Multiple Thematic Risks for each category
-
-For example:
-- **Category 8**: Manage IT Vulnerabilities & Patching
-  - Scanning Completeness
-  - Patching Completeness
-  - S-SDLC drafts
-  - Vulnerability assessment and risk treatment
-
-### PII Protection Categories
-- **PC0**: Public information with no confidentiality requirements
-- **PC1**: Internal information with basic confidentiality requirements  
-- **PC3**: Confidential information with high protection requirements
-
-## Requirements
-
-- Python 3.8+
-- PyTorch
-- Transformers
-- PEFT (Parameter-Efficient Fine-Tuning)
-- tqdm
-- pandas
-
-For fine-tuning, a GPU with at least 16GB VRAM is recommended.
-
-## Installation
-
-1. Clone this repository:
-```
-git clone [repository-url]
-cd foundation-sec-8b-risk-analyzer
-```
-
-2. Install dependencies:
-```
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-## Usage
+### Basic Usage
 
-### Fine-Tuning
+1. **Fine-tune the model with your data:**
+```bash
+# Using pre-formatted training data (JSONL)
+python risk_fine_tuner.py --training-data training_data.jsonl --output my_model
 
-Train a unified model that can handle both risk categorization and PII detection:
-
-```
-python risk_fine_tuner.py --training_data path/to/training_data --output_dir fine_tuning_output
-```
-
-The training data can include:
-- Risk categorization examples
-- PII classification examples
-- A mix of both
-
-The system will automatically detect the type of each example and train a unified model.
-
-Data can be provided in various formats:
-- CSV files
-- JSON/JSONL files
-- Excel files
-- A directory containing multiple data files
-
-After fine-tuning completes, a pickle file will be created with the model and all categories for inference.
-
-### Inference
-
-The inference script automatically detects whether to perform risk analysis or PII detection:
-
-```
-python risk_inference.py --model path/to/unified_model_with_categories.pkl --text "Your text to analyze"
+# Using raw Excel/CSV files (automatic processing)
+python risk_fine_tuner.py --training-data /path/to/excel/folder --output my_model
 ```
 
-To process multiple texts from a file:
+2. **Use the fine-tuned model for inference:**
+```bash
+# Analyze a single text
+python risk_inference.py --model my_model/unified_model_with_categories.pkl --text "Critical SQL injection vulnerability found in login system"
 
-```
-python risk_inference.py --model path/to/unified_model_with_categories.pkl --file path/to/texts.txt --output results.json
-```
-
-## Data Format
-
-### Input Formats for Fine-Tuning
-
-The system supports multiple input formats for training data:
-
-#### CSV Format for Risk Categorization
-```csv
-Risk Finding Text,Macro Risk Category,Thematic Risk 1,Thematic Risk 2
-"Missing encryption for sensitive data in transit","5. Protect Data","Encryption (At Rest, Use, Transit)"
+# Batch analysis from file
+python risk_inference.py --model my_model/unified_model_with_categories.pkl --file texts.txt --output results.json
 ```
 
-#### CSV Format for PII Detection
-```csv
-Text with potential PII,PC Category,PII Type 1,PII Type 2
-"Customer John Smith contacted us about order #12345","PC1","Name","Customer ID"
-"Our public documentation is available at docs.example.com","PC0"
-"Patient medical records contain diagnoses and SSNs","PC3","Health","SSN"
-```
+## 📊 Data Formats
 
-#### Mixed CSV Format
-You can also provide a single CSV file with mixed data types. The system will automatically detect the type of each row:
-```csv
-Text,Category,Type1,Type2
-"Missing encryption for sensitive data in transit","5. Protect Data","Encryption (At Rest, Use, Transit)"
-"Customer John Smith contacted us about order #12345","PC1","Name","Customer ID"
-```
+### Training Data Formats
 
-#### JSON/JSONL Format
-Each example should indicate its type:
+The fine-tuner accepts multiple data formats:
+
+#### 1. Pre-formatted JSONL (Recommended for labeled data)
+Each line should be a JSON object with:
+- **For risk examples:**
 ```json
 {
   "type": "risk",
-  "text": "Missing encryption for sensitive data in transit",
-  "macro_risk": "5. Protect Data",
-  "risk_themes": ["Encryption (At Rest, Use, Transit)"]
+  "text": "The firewall configuration allows unrestricted access from external IPs",
+  "macro_risk": "7. Manage Infrastructure",
+  "risk_themes": ["Network Segmentation", "Configuration Management"]
 }
 ```
 
+- **For PII examples:**
 ```json
 {
   "type": "pii",
-  "text": "Customer John Smith contacted us about order #12345",
-  "pc_category": "PC1",
-  "pii_types": ["Name", "Customer ID"]
+  "text": "Customer John Doe, email: john@example.com, SSN: 123-45-6789",
+  "pc_category": "PC3",
+  "pii_types": ["Name", "Email", "SSN"]
 }
 ```
 
-### Output Format
-
-The inference results include a "type" field indicating whether it's a risk or PII analysis:
-
-#### Risk Categorization Results
-```json
-{
-  "type": "risk",
-  "success": true,
-  "macro_risk": "5. Protect Data",
-  "risk_themes": ["Encryption (At Rest, Use, Transit)"],
-  "input_text": "Missing encryption for sensitive data in transit"
-}
+#### 2. Raw Excel/CSV Files (Automatic processing)
+Simply point to a folder containing Excel (.xlsx, .xls) or CSV files:
+```bash
+python risk_fine_tuner.py --training-data /path/to/raw/data/folder --output my_model
 ```
 
-#### PII Detection Results
-```json
-{
-  "type": "pii",
-  "success": true,
-  "pc_category": "PC1",
-  "pii_types": ["Name", "Customer ID"],
-  "input_text": "Customer John Smith contacted us about order #12345"
-}
+The system will:
+- Extract text from all sheets and rows
+- Automatically categorize content using 100+ security keywords
+- Detect PII using pattern matching
+- Generate training examples with confidence scores
+
+## 🏗️ Architecture
+
+### Components
+
+1. **risk_fine_tuner.py** - Main fine-tuning script
+   - Loads and processes training data
+   - Performs LoRA fine-tuning for efficiency
+   - Creates inference package (pickle file)
+
+2. **risk_fine_tuner_enhanced.py** - Raw data processing
+   - Extracts text from Excel/CSV files
+   - Analyzes content for risk categories
+   - Detects PII patterns
+   - Generates training examples
+
+3. **risk_inference.py** - Inference script
+   - Loads fine-tuned model from pickle
+   - Automatically detects if text is risk or PII
+   - Returns structured JSON results
+
+4. **run_enhanced_fine_tuner.py** - User-friendly wrapper
+   - Simplified interface for processing raw data
+   - Progress tracking and error handling
+
+## 🔧 Advanced Usage
+
+### Processing Raw Data
+
+```bash
+# Process a folder of Excel files with the enhanced script
+python run_enhanced_fine_tuner.py /path/to/excel/files
+
+# This creates:
+# - extracted_data/training_data.jsonl (processed examples)
+# - extracted_data/extraction_summary.json (statistics)
 ```
 
-## License
+### Linux Environment Setup
 
-Please refer to the license of the Foundation-Sec-8B model from Cisco.
+If you encounter library issues on Linux:
 
-## Acknowledgments
+```bash
+# Use the provided fix scripts
+./fix_threading.sh
+./run_python_fixed.sh risk_fine_tuner.py --training-data data.jsonl
+```
 
-- This project uses the Foundation-Sec-8B model developed by Cisco's Security AI team
-- Fine-tuning is implemented using Hugging Face Transformers and PEFT
+### Custom Categories
+
+The system uses standardized risk categories defined in the scripts:
+
+**12 Macro Risk Categories:**
+1. Operating Model & Risk Management
+2. Develop and Acquire Software and Systems
+3. Manage & Demise IT Assets
+4. Manage Data
+5. Protect Data
+6. Identity & Access Management
+7. Manage Infrastructure
+8. Manage IT Vulnerabilities & Patching
+9. Manage Technology Capacity & Resources
+10. Monitor & Respond to Technology Incidents
+11. Monitor and Respond to Security Incidents
+12. Manage Business Continuity and Disaster Recovery
+
+**PII Protection Categories:**
+- PC0: Public information (no confidentiality requirements)
+- PC1: Internal information (basic confidentiality)
+- PC3: Confidential information (high protection requirements)
+
+## 📁 Output Files
+
+After fine-tuning, you'll find:
+
+```
+output_directory/
+├── unified_model_with_categories.pkl  # Main inference package
+├── final_model/                       # Fine-tuned model files
+├── unified_train.jsonl               # Formatted training data
+├── unified_eval.jsonl                # Evaluation data
+└── checkpoints/                      # Training checkpoints
+```
+
+## 🧪 Testing
+
+Run the integration test to verify everything works:
+
+```bash
+python test_integration.py
+```
+
+This creates test data and shows the complete workflow.
+
+## 💡 Examples
+
+### Example 1: Analyze a security finding
+```bash
+python risk_inference.py \
+  --model my_model/unified_model_with_categories.pkl \
+  --text "Database backup encryption keys stored in plaintext configuration file"
+```
+
+Expected output:
+```
+Type: Security Risk
+Macro Risk: 5. Protect Data
+Risk Themes: Encryption (At Rest, Use, Transit), Secrets Management
+```
+
+### Example 2: Detect PII
+```bash
+python risk_inference.py \
+  --model my_model/unified_model_with_categories.pkl \
+  --text "Employee record: Jane Smith, DOB: 01/15/1985, Salary: $85,000"
+```
+
+Expected output:
+```
+Type: PII
+Protection Category: PC3
+PII Types: Name, DOB, Financial
+```
+
+## 🐛 Troubleshooting
+
+### "No valid training examples found"
+- Ensure your data is in the correct format
+- For raw Excel files, check they contain text data
+- Verify file permissions
+
+### Memory issues during fine-tuning
+- Reduce batch size in the script
+- Use gradient accumulation
+- Consider using a smaller dataset for initial testing
+
+### Linux library errors
+- Use the provided fix_threading.sh script
+- Set environment variables: `export OPENBLAS_NUM_THREADS=1`
+
+## 📝 License
+
+[Your License Here]
+
+## 🤝 Contributing
+
+Contributions are welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Submit a pull request
+
+## 📧 Support
+
+For issues or questions, please open a GitHub issue or contact [your contact info].

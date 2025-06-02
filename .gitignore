@@ -1,0 +1,27 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test data and outputs
+test_data.jsonl
+test_batch.txt
+test_output/
+test_results.json
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# IDE files
+.vscode/
+.idea/
+
+# Model outputs
+*.pkl
+checkpoints/
+final_model/
+
+# Logs
+*.log 
