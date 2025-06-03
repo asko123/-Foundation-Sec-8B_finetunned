@@ -556,7 +556,7 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
                 logging_steps=10,
                 eval_steps=eval_steps,
                 save_steps=save_steps,
-                evaluation_strategy="steps",
+                eval_strategy="steps",
                 save_strategy="steps",
                 load_best_model_at_end=True,
                 fp16=True if device == "cuda" else False,
