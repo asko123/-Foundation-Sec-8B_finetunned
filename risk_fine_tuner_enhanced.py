@@ -383,6 +383,275 @@ def load_training_file(file_path: str) -> List[Dict[str, Any]]:
     
     return examples
 
+def process_findings_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
+    """
+    Process raw findings data into training examples.
+    
+    Key columns:
+    - Finding_Title: Title of the finding
+    - Finding_Description: Detailed description of the finding
+    - L2: L2 category (maps to our L2 categories)
+    - macro_risks: List of macro risks (maps to our MACRO_RISKS)
+    
+    Additional columns will be preserved in metadata.
+    """
+    training_examples = []
+    
+    try:
+        # Clean column names
+        raw_data.columns = [str(col).strip().upper() for col in raw_data.columns]
+        required_columns = {'FINDING_TITLE', 'FINDING_DESCRIPTION', 'L2', 'MACRO_RISKS'}
+        if not all(col in raw_data.columns for col in required_columns):
+            missing = required_columns - set(raw_data.columns)
+            print(f"Warning: Missing required columns: {missing}")
+            return []
+        
+        # Get list of additional columns for metadata
+        metadata_columns = [col for col in raw_data.columns if col not in required_columns]
+        print(f"Found additional columns that will be preserved in metadata: {metadata_columns}")
+        
+        for _, row in raw_data.iterrows():
+            try:
+                # Create context from title and description
+                context = f"Finding: {row['FINDING_TITLE']}\n\n"
+                if pd.notna(row['FINDING_DESCRIPTION']):
+                    context += f"Description: {row['FINDING_DESCRIPTION']}"
+                
+                # Parse L2 category
+                l2_category = None
+                if pd.notna(row['L2']):
+                    l2_value = str(row['L2']).strip()
+                    # First try exact match
+                    for key, value in L2.items():
+                        if l2_value == value:
+                            l2_category = f"{key}. {value}"
+                            break
+                    
+                    # If no exact match, try fuzzy match
+                    if not l2_category:
+                        for key, value in L2.items():
+                            if l2_value.lower() in value.lower() or value.lower() in l2_value.lower():
+                                l2_category = f"{key}. {value}"
+                                print(f"Fuzzy matched L2 category: '{l2_value}' -> '{value}'")
+                                break
+                
+                # Parse macro risks
+                macro_risks = set()
+                if pd.notna(row['MACRO_RISKS']):
+                    # Handle different formats (string, list, comma-separated, semicolon-separated)
+                    risks = row['MACRO_RISKS']
+                    if isinstance(risks, str):
+                        # Try different delimiters
+                        if ',' in risks:
+                            risks = [r.strip() for r in risks.split(',')]
+                        elif ';' in risks:
+                            risks = [r.strip() for r in risks.split(';')]
+                        elif '\n' in risks:
+                            risks = [r.strip() for r in risks.split('\n')]
+                        else:
+                            risks = [risks.strip()]
+                    elif isinstance(risks, list):
+                        risks = [str(r).strip() for r in risks]
+                    
+                    # Match with defined macro risks
+                    for risk in risks:
+                        risk = risk.strip()
+                        matched = False
+                        
+                        # First try exact match
+                        for themes in MACRO_RISKS.values():
+                            if risk in themes:
+                                macro_risks.add(risk)
+                                matched = True
+                                break
+                        
+                        # If no exact match, try fuzzy match
+                        if not matched:
+                            best_match = None
+                            best_score = 0
+                            risk_lower = risk.lower()
+                            
+                            for themes in MACRO_RISKS.values():
+                                for theme in themes:
+                                    theme_lower = theme.lower()
+                                    # Calculate similarity score
+                                    words_risk = set(risk_lower.split())
+                                    words_theme = set(theme_lower.split())
+                                    common_words = words_risk & words_theme
+                                    if common_words:
+                                        score = len(common_words) / max(len(words_risk), len(words_theme))
+                                        if score > best_score and score > 0.5:  # Threshold for fuzzy matching
+                                            best_score = score
+                                            best_match = theme
+                            
+                            if best_match:
+                                macro_risks.add(best_match)
+                                print(f"Fuzzy matched macro risk: '{risk}' -> '{best_match}'")
+                
+                # Collect metadata from additional columns
+                metadata = {
+                    "source": "raw_data",
+                    "original_l2": row['L2'] if pd.notna(row['L2']) else None,
+                    "original_risks": row['MACRO_RISKS'] if pd.notna(row['MACRO_RISKS']) else None,
+                }
+                
+                # Add additional columns to metadata
+                for col in metadata_columns:
+                    if pd.notna(row[col]):
+                        metadata[col.lower()] = row[col]
+                
+                # Only create example if we have valid L2 and macro risks
+                if l2_category and macro_risks:
+                    example = {
+                        "type": "risk",
+                        "text": context,
+                        "l2_category": l2_category,
+                        "macro_risks": list(macro_risks),  # Convert set back to list
+                        "metadata": metadata
+                    }
+                    training_examples.append(example)
+                else:
+                    print(f"Warning: Skipping finding '{row['FINDING_TITLE']}' due to:")
+                    if not l2_category:
+                        print(f"  - Could not map L2 category: '{row['L2'] if pd.notna(row['L2']) else 'N/A'}'")
+                    if not macro_risks:
+                        print(f"  - Could not map macro risks: '{row['MACRO_RISKS'] if pd.notna(row['MACRO_RISKS']) else 'N/A'}'")
+            
+            except Exception as e:
+                print(f"Error processing row: {str(e)}")
+                continue
+        
+        # Print summary
+        print(f"\nProcessed {len(raw_data)} findings:")
+        print(f"- Successfully mapped: {len(training_examples)}")
+        print(f"- Skipped: {len(raw_data) - len(training_examples)}")
+        
+        if training_examples:
+            # Print mapping statistics
+            l2_stats = {}
+            risk_stats = {}
+            for ex in training_examples:
+                l2 = ex['l2_category'].split('.')[0]
+                l2_stats[l2] = l2_stats.get(l2, 0) + 1
+                for risk in ex['macro_risks']:
+                    risk_stats[risk] = risk_stats.get(risk, 0) + 1
+            
+            print("\nL2 Category Distribution:")
+            for l2, count in sorted(l2_stats.items()):
+                print(f"  L2 {l2}: {count} findings")
+            
+            print("\nTop Macro Risks:")
+            for risk, count in sorted(risk_stats.items(), key=lambda x: x[1], reverse=True)[:10]:
+                print(f"  {risk}: {count} occurrences")
+        
+    except Exception as e:
+        print(f"Error processing findings data: {str(e)}")
+        traceback.print_exc()
+    
+    return training_examples
+
+def extract_text_from_excel(file_path: str) -> List[Dict[str, Any]]:
+    """
+    Extract text from Excel files, with special handling for findings data.
+    Supports both findings data (with Finding_Title, Finding_Description, etc.)
+    and privacy data (with COLUMNNAME, PRIVACYTYPE, etc.).
+    """
+    try:
+        print(f"Reading Excel file: {file_path}")
+        
+        # Try to read all sheets
+        all_sheets = pd.read_excel(file_path, sheet_name=None)
+        training_examples = []
+        
+        for sheet_name, df in all_sheets.items():
+            print(f"\nProcessing sheet: {sheet_name}")
+            
+            # Clean column names
+            df.columns = [str(col).strip().upper() for col in df.columns]
+            
+            # Check if this is findings data
+            if 'FINDING_TITLE' in df.columns:
+                print(f"Found findings data in sheet {sheet_name}")
+                training_examples.extend(process_findings_data(df))
+                continue
+            
+            # Check if this is privacy data
+            if 'COLUMNNAME' in df.columns:
+                print(f"Found privacy data in sheet {sheet_name}")
+                training_examples.extend(process_privacy_data(df))
+                continue
+            
+            print(f"Warning: Unknown data format in sheet {sheet_name}")
+            print(f"Available columns: {', '.join(df.columns)}")
+            print("Expected either:")
+            print("- Findings data columns: FINDING_TITLE, FINDING_DESCRIPTION, L2, MACRO_RISKS")
+            print("- Privacy data columns: COLUMNNAME, PRIVACYTYPE, PRIVACYTYPENAME")
+        
+        if not training_examples:
+            print(f"Warning: No valid training examples found in {file_path}")
+        else:
+            print(f"\nExtracted {len(training_examples)} training examples from {file_path}")
+            risk_count = sum(1 for ex in training_examples if ex["type"] == "risk")
+            pii_count = sum(1 for ex in training_examples if ex["type"] == "pii")
+            print(f"- Risk examples: {risk_count}")
+            print(f"- PII examples: {pii_count}")
+        
+        return training_examples
+            
+    except Exception as e:
+        print(f"Error processing Excel file {file_path}: {str(e)}")
+        traceback.print_exc()
+        return []
+
+def extract_text_from_csv(file_path: str) -> List[Dict[str, Any]]:
+    """
+    Extract text from CSV files, with special handling for findings data.
+    Supports both findings data (with Finding_Title, Finding_Description, etc.)
+    and privacy data (with COLUMNNAME, PRIVACYTYPE, etc.).
+    """
+    try:
+        print(f"Reading CSV file: {file_path}")
+        
+        # Try to read with different encodings
+        encodings = ['utf-8', 'latin1', 'iso-8859-1']
+        df = None
+        
+        for encoding in encodings:
+            try:
+                df = pd.read_csv(file_path, encoding=encoding)
+                print(f"Successfully read file with {encoding} encoding")
+                break
+            except UnicodeDecodeError:
+                continue
+        
+        if df is None:
+            raise ValueError(f"Could not read CSV file with any of the attempted encodings: {encodings}")
+        
+        # Clean column names
+        df.columns = [str(col).strip().upper() for col in df.columns]
+        
+        # Check if this is findings data
+        if 'FINDING_TITLE' in df.columns:
+            print("Found findings data")
+            return process_findings_data(df)
+        
+        # Check if this is privacy data
+        if 'COLUMNNAME' in df.columns:
+            print("Found privacy data")
+            return process_privacy_data(df)
+        
+        print("Warning: Unknown data format")
+        print(f"Available columns: {', '.join(df.columns)}")
+        print("Expected either:")
+        print("- Findings data columns: FINDING_TITLE, FINDING_DESCRIPTION, L2, MACRO_RISKS")
+        print("- Privacy data columns: COLUMNNAME, PRIVACYTYPE, PRIVACYTYPENAME")
+        return []
+            
+    except Exception as e:
+        print(f"Error processing CSV file {file_path}: {str(e)}")
+        traceback.print_exc()
+        return []
+
 def main():
     """Main function to demonstrate the enhanced functionality."""
     import argparse
