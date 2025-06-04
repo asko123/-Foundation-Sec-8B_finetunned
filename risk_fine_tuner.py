@@ -517,15 +517,16 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
                 tokenizer.pad_token = tokenizer.eos_token
             
             # Set up chat template
-            tokenizer.chat_template = '''{% for message in messages %}
-{% if message['role'] == 'system' %}{% if not loop.first %}{{ '\n' }}{% endif %}{{ message['content'] }}
+            chat_template = """{% for message in messages %}
+{% if message['role'] == 'system' %}{% if not loop.first %}{{ '\\n' }}{% endif %}{{ message['content'] }}
 {% elif message['role'] == 'user' %}
 User: {{ message['content'] }}
 {% elif message['role'] == 'assistant' %}
 Assistant: {{ message['content'] }}
 {% endif %}
 {% endfor %}
-Assistant: '''
+Assistant:"""
+            tokenizer.chat_template = chat_template
 
             # Configure LoRA for parameter-efficient fine-tuning
             lora_config = LoraConfig(
