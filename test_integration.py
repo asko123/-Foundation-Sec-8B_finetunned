@@ -102,10 +102,10 @@ def main():
     print("2. Creates unified_model_with_categories.pkl containing:")
     print("   - model_path: Path to fine-tuned model")
     print("   - unified: True")
-    print("   - macro_risks: Risk category definitions")
-    print("   - thematic_risks: Theme definitions")
+    print("   - l2: L2 category definitions")
+    print("   - macro_risks: Macro risk definitions")
     print("   - pii_protection_categories: PC0/PC1/PC3 definitions")
-    print("   - pii_types: Common PII types")
+    print("   - pii_types: Common PII type definitions")
     print("3. risk_inference.py loads the pickle and performs analysis")
     print("4. Automatically detects if text is risk or PII and analyzes accordingly")
     

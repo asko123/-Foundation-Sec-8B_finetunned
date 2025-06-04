@@ -35,92 +35,6 @@ from risk_fine_tuner import (
     SENSITIVITY_LEVELS
 )
 
-# Define the standardized macro risk categories and thematic risks
-THEMATIC_RISKS = {
-    "1": [
-        "Policy/Standard Review",
-        "KCI / KRI completeness",
-        "IT General & Baseline Controls (Coverage)",
-        "Framework Controls (External/Internal)",
-        "Exception Management & Risk Tolerance",
-        "Issue Management",
-        "Monitoring & Testing (MAT)",
-        "Security / IT Awareness Training",
-        "Maturity Baseline (Yearly)",
-        "Governance (Operational Controls)"
-    ],
-    "2": [
-        "Flag Ship Control Coverage",
-        "Business Requirement Approval Process",
-        "Change Process (Standards & Emergency)",
-        "Post Implementation Evaluation (ORE)",
-        "Software Dependencies (Internal and External)",
-        "M&A – Control Coverage"
-    ],
-    "3": [
-        "Inventory Accuracy & Completeness",
-        "Asset Classification & Governance",
-        "End of Life – (Hardware and Software)",
-        "Asset Destruction (Storage / Media)"
-    ],
-    "4": [
-        "Data Identification, Inventory & Lineage",
-        "Data Classification & Governance",
-        "Data Quality Controls"
-    ],
-    "5": [
-        "Data Monitoring Processes",
-        "Encryption (At Rest, Use, Transit)",
-        "Data Loss Prevention",
-        "Sensitive Data Logging",
-        "Third Party Data Protection",
-        "Removable Media"
-    ],
-    "6": [
-        "Authentication",
-        "Authorization",
-        "Privilege Management",
-        "Identity Access Lifecycle (Joiners/Movers/Leavers)",
-        "Segregation of Duties",
-        "Secrets Management",
-        "Production Access"
-    ],
-    "7": [
-        "Configuration Management",
-        "Network Segmentation",
-        "Cloud Controls",
-        "Data Center Management"
-    ],
-    "8": [
-        "Scanning Completeness",
-        "Patching Completeness",
-        "S-SDLC drafts",
-        "Vulnerability assessment and risk treatment"
-    ],
-    "9": [
-        "Capacity Planning",
-        "SLO Management",
-        "Monitoring (Availability, Performance and Latency)"
-    ],
-    "10": [
-        "Incident Identification & Classification",
-        "Tech Incident Reporting & Escalation",
-        "Thematic & Trends"
-    ],
-    "11": [
-        "Incident Response Planning",
-        "Incident Monitoring and Handling",
-        "Security Incident Reporting & Escalation",
-        "Audit Logging / Post Mortem",
-        "Incident Response Testing",
-        "Threat Intelligence"
-    ],
-    "12": [
-        "Operational Resiliency",
-        "Cyber Resilience"
-    ]
-}
-
 # Keywords for risk category identification
 RISK_KEYWORDS = {
     "1": ["policy", "standard", "governance", "framework", "control", "baseline", "training", "awareness", "maturity", "monitoring", "testing", "kci", "kri", "exception", "tolerance", "issue management"],
@@ -422,17 +336,17 @@ def process_folder_for_training_data(folder_path: str, output_dir: str = "traini
     return training_file_path
 
 def format_all_categories_for_prompt() -> str:
-    """Format all categories (risk and PII) for inclusion in prompts."""
+    """Format all categories for inclusion in prompts."""
     categories_text = "PART 1: SECURITY RISK CATEGORIES\n\n"
-    categories_text += "Standardized Macro Risk Categories:\n"
-    for key, value in MACRO_RISKS.items():
+    categories_text += "L2 Categories:\n"
+    for key, value in L2.items():
         categories_text += f"{key}. {value}\n"
     
-    categories_text += "\nThematic Risks for each Macro Risk Category:\n"
-    for key, themes in THEMATIC_RISKS.items():
-        categories_text += f"\n{key}. {MACRO_RISKS[key]}:\n"
-        for theme in themes:
-            categories_text += f"   - {theme}\n"
+    categories_text += "\nMacro Risks for each L2 Category:\n"
+    for key, risks in MACRO_RISKS.items():
+        categories_text += f"\n{key}. {L2[key]}:\n"
+        for risk in risks:
+            categories_text += f"   - {risk}\n"
     
     categories_text += "\n\nPART 2: PII PROTECTION CATEGORIES\n\n"
     categories_text += "PII Protection Categories:\n"
