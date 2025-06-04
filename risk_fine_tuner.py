@@ -440,6 +440,62 @@ def cleanup_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         
+def setup_device():
+    """Set up and return the appropriate device for training."""
+    if not torch.cuda.is_available():
+        print("CUDA not available. Using CPU (this will be slow)")
+        return "cpu", 1, 8  # device, batch_size, gradient_accumulation_steps
+    
+    # Get the number of available GPUs
+    n_gpus = torch.cuda.device_count()
+    print(f"Found {n_gpus} GPU(s)")
+    
+    if n_gpus > 1:
+        # When multiple GPUs are available, explicitly choose the first one
+        print("Multiple GPUs detected. Using cuda:0")
+        torch.cuda.set_device(0)
+        device = "cuda:0"
+    else:
+        device = "cuda"
+    
+    # Get VRAM info for the selected device
+    vram_mb = torch.cuda.get_device_properties(0).total_memory / (1024 * 1024)
+    print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+    print(f"Available VRAM: {vram_mb:.2f} MB")
+    
+    # Adjust batch size based on VRAM
+    if vram_mb < 16000:  # Less than 16GB
+        bs = 1
+        ga_steps = 8
+        print("Limited VRAM detected, using smaller batch size")
+    else:
+        bs = 2
+        ga_steps = 4
+    
+    return device, bs, ga_steps
+
+def ensure_tensors_on_device(batch: Dict[str, Any], device: str) -> Dict[str, Any]:
+    """Ensure all tensors in the batch are on the specified device."""
+    return {k: v.to(device) if hasattr(v, 'to') else v for k, v in batch.items()}
+
+def format_chat(example, tokenizer, device):
+    """Format chat examples and ensure they're on the correct device."""
+    if isinstance(example["messages"], list):
+        formatted_text = ""
+        for msg in example["messages"]:
+            if msg["role"] == "system":
+                formatted_text += f"{msg['content']}\n"
+            elif msg["role"] == "user":
+                formatted_text += f"User: {msg['content']}\n"
+            elif msg["role"] == "assistant":
+                formatted_text += f"Assistant: {msg['content']}\n"
+        input_ids = tokenizer.encode(formatted_text + "Assistant: ", add_special_tokens=True)
+    else:
+        input_ids = tokenizer.encode(str(example["messages"]), add_special_tokens=True)
+    
+    # Convert to tensor and move to correct device
+    return {"input_ids": torch.tensor(input_ids, device=device)}
+
 def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data") -> Optional[str]:
     """
     Fine-tune the model with the given training data on both risk and PII tasks simultaneously.
@@ -532,40 +588,29 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
         try:
             print("Loading base model: fdtn-ai/Foundation-Sec-8B")
             
-            # Check device availability
-            if torch.cuda.is_available():
-                print(f"CUDA available. Using GPU: {torch.cuda.get_device_name(0)}")
-                device = "cuda"
-                vram_mb = torch.cuda.get_device_properties(0).total_memory / (1024 * 1024)
-                print(f"Available VRAM: {vram_mb:.2f} MB")
-                
-                # Adjust batch size based on VRAM
-                if vram_mb < 16000:  # Less than 16GB
-                    bs = 1
-                    ga_steps = 8
-                    print("Limited VRAM detected, using smaller batch size")
-                else:
-                    bs = 2
-                    ga_steps = 4
-            else:
-                print("CUDA not available. Using CPU (this will be slow)")
-                device = "cpu"
-                bs = 1
-                ga_steps = 8
+            # Set up device and get training parameters
+            device, bs, ga_steps = setup_device()
             
             # Clean up memory before loading model
             cleanup_memory()
             
-            # Load model with quantization for efficiency
+            # Load model with explicit device mapping
+            model_kwargs = {
+                "load_in_8bit": True if "cuda" in device else False,
+                "torch_dtype": torch.float16 if "cuda" in device else torch.float32,
+                "device_map": {"": 0} if "cuda" in device else "auto"  # Force all modules to GPU 0
+            }
+            
             model = AutoModelForCausalLM.from_pretrained(
                 "fdtn-ai/Foundation-Sec-8B",
-                load_in_8bit=True if device == "cuda" else False,
-                device_map="auto" if device == "cuda" else None,
-                torch_dtype=torch.float16 if device == "cuda" else torch.float32
+                **model_kwargs
             )
             
-            if device == "cuda":
+            if "cuda" in device:
                 model = prepare_model_for_kbit_training(model)
+            
+            # Ensure model is on the correct device
+            model = model.to(device)
             
             # Load tokenizer
             tokenizer = AutoTokenizer.from_pretrained("fdtn-ai/Foundation-Sec-8B")
@@ -609,27 +654,31 @@ Assistant: '''
             
             print(f"Training for {num_epochs} epochs with {total_steps} total steps")
             
-            # Prepare data formatting function
-            def format_chat(example):
-                if isinstance(example["messages"], list):
-                    formatted_text = ""
-                    for msg in example["messages"]:
-                        if msg["role"] == "system":
-                            formatted_text += f"{msg['content']}\n"
-                        elif msg["role"] == "user":
-                            formatted_text += f"User: {msg['content']}\n"
-                        elif msg["role"] == "assistant":
-                            formatted_text += f"Assistant: {msg['content']}\n"
-                    return {"input_ids": tokenizer.encode(formatted_text + "Assistant: ", add_special_tokens=True)}
-                return {"input_ids": tokenizer.encode(str(example["messages"]), add_special_tokens=True)}
+            # Create a data formatting function closure with device access
+            def format_chat_wrapper(example):
+                return format_chat(example, tokenizer, device)
             
             print("Processing training dataset...")
-            train_dataset = train_dataset.map(format_chat, remove_columns=["messages"])
+            train_dataset = train_dataset.map(
+                format_chat_wrapper,
+                remove_columns=["messages"],
+                load_from_cache_file=False
+            )
             
             print("Processing evaluation dataset...")
-            eval_dataset = eval_dataset.map(format_chat, remove_columns=["messages"])
+            eval_dataset = eval_dataset.map(
+                format_chat_wrapper,
+                remove_columns=["messages"],
+                load_from_cache_file=False
+            )
             
-            # Initialize trainer
+            # Create a custom data collator that ensures device consistency
+            class DeviceAwareDataCollator(DataCollatorForLanguageModeling):
+                def __call__(self, features):
+                    batch = super().__call__(features)
+                    return ensure_tensors_on_device(batch, device)
+            
+            # Initialize trainer with device-aware collator
             trainer = Trainer(
                 model=model,
                 args=TrainingArguments(
@@ -648,17 +697,20 @@ Assistant: '''
                     eval_strategy="steps",
                     save_strategy="steps",
                     load_best_model_at_end=True,
-                    fp16=True if device == "cuda" else False,
+                    fp16=True if "cuda" in device else False,
                     report_to="none",
                     save_total_limit=3,
                     logging_first_step=True,
-                    dataloader_num_workers=4 if device == "cuda" else 0,
+                    dataloader_num_workers=4 if "cuda" in device else 0,
                     dataloader_drop_last=True,
-                    max_grad_norm=1.0
+                    max_grad_norm=1.0,
+                    no_cuda=device == "cpu",
+                    local_rank=-1,  # Disable distributed training
+                    ddp_find_unused_parameters=False
                 ),
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
-                data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
+                data_collator=DeviceAwareDataCollator(tokenizer=tokenizer, mlm=False),
             )
             
             # Start training
