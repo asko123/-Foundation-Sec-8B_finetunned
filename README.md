@@ -128,7 +128,7 @@ If you encounter library issues on Linux:
 
 The system uses standardized risk categories defined in the scripts:
 
-**12 Macro Risk Categories:**
+**L2 Categories:**
 1. Operating Model & Risk Management
 2. Develop and Acquire Software and Systems
 3. Manage & Demise IT Assets
@@ -141,6 +141,8 @@ The system uses standardized risk categories defined in the scripts:
 10. Monitor & Respond to Technology Incidents
 11. Monitor and Respond to Security Incidents
 12. Manage Business Continuity and Disaster Recovery
+
+Each L2 category has associated **Macro Risks** that represent specific vulnerabilities or weaknesses within that category.
 
 **PII Protection Categories:**
 - PC0: Public information (no confidentiality requirements)
@@ -182,8 +184,8 @@ python risk_inference.py \
 Expected output:
 ```
 Type: Security Risk
-Macro Risk: 5. Protect Data
-Risk Themes: Encryption (At Rest, Use, Transit), Secrets Management
+L2 Category: 5. Protect Data
+Macro Risks: Encryption (At Rest, Use, Transit), Secrets Management
 ```
 
 ### Example 2: Detect PII
@@ -209,12 +211,31 @@ PII Types: Name, DOB, Financial
 
 ### Memory issues during fine-tuning
 - Reduce batch size in the script
-- Use gradient accumulation
-- Consider using a smaller dataset for initial testing
 
-### Linux library errors
-- Use the provided fix_threading.sh script
-- Set environment variables: `export OPENBLAS_NUM_THREADS=1`
+## 📚 Risk Categories
+
+The system uses standardized risk categories:
+
+**L2 Categories:**
+1. Operating Model & Risk Management
+2. Develop and Acquire Software and Systems
+3. Manage & Demise IT Assets
+4. Manage Data
+5. Protect Data
+6. Identity & Access Management
+7. Manage Infrastructure
+8. Manage IT Vulnerabilities & Patching
+9. Manage Technology Capacity & Resources
+10. Monitor & Respond to Technology Incidents
+11. Monitor and Respond to Security Incidents
+12. Manage Business Continuity and Disaster Recovery
+
+Each L2 category has associated **Macro Risks** that represent specific vulnerabilities or weaknesses within that category.
+
+**PII Protection Categories:**
+- PC0: Public information (no confidentiality requirements)
+- PC1: Internal information (basic confidentiality)
+- PC3: Confidential information (high protection requirements)
 
 ## 📝 License
 

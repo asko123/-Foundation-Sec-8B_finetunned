@@ -14,14 +14,14 @@ def create_test_data():
         {
             "type": "risk",
             "text": "The database server has not been patched in 6 months, leaving it vulnerable to known exploits.",
-            "macro_risk": "8. Manage IT Vulnerabilities & Patching",
-            "risk_themes": ["Patching Completeness", "Vulnerability assessment and risk treatment"]
+            "l2_category": "8. Manage IT Vulnerabilities & Patching",
+            "macro_risks": ["Patching Completeness", "Vulnerability assessment and risk treatment"]
         },
         {
             "type": "risk", 
             "text": "User accounts are not being properly deactivated when employees leave the company.",
-            "macro_risk": "6. Identity & Access Management",
-            "risk_themes": ["Identity Access Lifecycle (Joiners/Movers/Leavers)"]
+            "l2_category": "6. Identity & Access Management",
+            "macro_risks": ["Identity Access Lifecycle (Joiners/Movers/Leavers)"]
         },
         # PII examples
         {
