@@ -164,6 +164,19 @@ PII_TYPES = [
     "Location", "IP Address", "Device ID", "Customer ID", "Employment"
 ]
 
+# Privacy classification mappings
+PRIVACY_CLASSIFICATIONS = {
+    "PC0": "Public",
+    "PC1": "Internal",
+    "PC3": "Confidential"
+}
+
+SENSITIVITY_LEVELS = {
+    "DP10": "Public",
+    "DP20": "Restricted",
+    "DP30": "Highly Restricted"
+}
+
 def format_all_categories_for_prompt() -> str:
     """Format all categories (risk and PII) for inclusion in prompts."""
     categories_text = "PART 1: SECURITY RISK CATEGORIES\n\n"
@@ -832,6 +845,270 @@ def main():
         print(f"Error: {e}")
         traceback.print_exc()
         return 1
+
+def process_privacy_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
+    """
+    Process raw privacy data into training examples.
+    
+    Expected columns:
+    - COLUMNNAME: Name of the database column
+    - PRIVACYTYPE: Type of privacy data
+    - PRIVACYTYPENAME: Name of the privacy type
+    - PRIVACYTYPEDESCRIPTION: Description of the privacy type
+    - PRIVACYTYPECLASSIFICATION: Privacy classification level
+    """
+    training_examples = []
+    
+    try:
+        for _, row in raw_data.iterrows():
+            # Create context from available fields
+            context = f"Database Column: {row['COLUMNNAME']}\n"
+            if pd.notna(row['ENTITYNAME']):
+                context += f"Entity: {row['ENTITYNAME']}\n"
+            if pd.notna(row['ENTITYDESC']):
+                context += f"Description: {row['ENTITYDESC']}\n"
+            if pd.notna(row['PRIVACYTYPEDESCRIPTION']):
+                context += f"Privacy Description: {row['PRIVACYTYPEDESCRIPTION']}\n"
+            
+            # Determine privacy classification
+            privacy_class = "PC1"  # Default to Internal
+            if pd.notna(row['PRIVACYTYPECLASSIFICATION']):
+                classification = str(row['PRIVACYTYPECLASSIFICATION']).upper()
+                if "PUBLIC" in classification or "DP10" in classification:
+                    privacy_class = "PC0"
+                elif any(level in classification for level in ["CONFIDENTIAL", "DP30", "HIGHLY RESTRICTED"]):
+                    privacy_class = "PC3"
+            
+            # Determine PII types
+            pii_types = set()  # Use set to avoid duplicates
+            
+            # Check PRIVACYTYPENAME
+            if pd.notna(row['PRIVACYTYPENAME']):
+                ptype = str(row['PRIVACYTYPENAME']).upper()
+                if any(term in ptype for term in ["SSN", "TAX ID", "GOVT_ID"]):
+                    pii_types.add("SSN")
+                if "NAME" in ptype:
+                    pii_types.add("Name")
+                if "EMAIL" in ptype:
+                    pii_types.add("Email")
+                if "PHONE" in ptype:
+                    pii_types.add("Phone")
+                if "ADDRESS" in ptype:
+                    pii_types.add("Address")
+                if any(term in ptype for term in ["DOB", "BIRTH", "DATE OF BIRTH"]):
+                    pii_types.add("DOB")
+                if any(term in ptype for term in ["NATIONAL ID", "GOVT_ID", "GOVERNMENT ID"]):
+                    pii_types.add("National ID")
+                if any(term in ptype for term in ["FINANCIAL", "ACCOUNT", "CREDIT", "DEBIT"]):
+                    pii_types.add("Financial")
+                if any(term in ptype for term in ["HEALTH", "MEDICAL"]):
+                    pii_types.add("Health")
+            
+            # Check COLUMNNAME for additional hints
+            column = str(row['COLUMNNAME']).upper()
+            if "SSN" in column or "TAX_ID" in column:
+                pii_types.add("SSN")
+            if any(term in column for term in ["FIRST_NAME", "LAST_NAME", "FULL_NAME"]):
+                pii_types.add("Name")
+            if "EMAIL" in column:
+                pii_types.add("Email")
+            if "PHONE" in column:
+                pii_types.add("Phone")
+            if "ADDRESS" in column:
+                pii_types.add("Address")
+            if "DOB" in column or "BIRTH_DATE" in column:
+                pii_types.add("DOB")
+            
+            # Create training example
+            example = {
+                "type": "pii",
+                "text": context,
+                "pc_category": privacy_class,
+                "pii_types": list(pii_types),  # Convert set back to list
+                "metadata": {
+                    "source_column": row['COLUMNNAME'],
+                    "privacy_type": row['PRIVACYTYPE'] if pd.notna(row['PRIVACYTYPE']) else None,
+                    "sensitivity": row['PRIVACYTYPECLASSIFICATION'] if pd.notna(row['PRIVACYTYPECLASSIFICATION']) else None,
+                    "entity_type": row['ENTITYTYPE'] if pd.notna(row['ENTITYTYPE']) else None,
+                    "entity_name": row['ENTITYNAME'] if pd.notna(row['ENTITYNAME']) else None
+                }
+            }
+            
+            training_examples.append(example)
+            
+    except Exception as e:
+        print(f"Error processing privacy data: {str(e)}")
+        traceback.print_exc()
+    
+    return training_examples
+
+def process_findings_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
+    """
+    Process raw findings data into training examples.
+    
+    Expected columns:
+    - Finding_Title: Title of the finding
+    - Finding_Description: Detailed description of the finding
+    - L2: L2 category
+    - macro_risks: List of macro risks
+    """
+    training_examples = []
+    
+    try:
+        for _, row in raw_data.iterrows():
+            # Create context from title and description
+            context = f"Finding: {row['Finding_Title']}\n\n"
+            if pd.notna(row['Finding_Description']):
+                context += f"Description: {row['Finding_Description']}"
+            
+            # Parse L2 category
+            l2_category = None
+            if pd.notna(row['L2']):
+                l2_value = str(row['L2']).strip()
+                # First try exact match
+                for key, value in L2.items():
+                    if l2_value == value:
+                        l2_category = f"{key}. {value}"
+                        break
+                
+                # If no exact match, try fuzzy match
+                if not l2_category:
+                    for key, value in L2.items():
+                        if l2_value in value or value in l2_value:
+                            l2_category = f"{key}. {value}"
+                            break
+            
+            # Parse macro risks
+            macro_risks = set()  # Use set to avoid duplicates
+            if pd.notna(row['macro_risks']):
+                # Handle different formats (string, list, comma-separated)
+                risks = row['macro_risks']
+                if isinstance(risks, str):
+                    risks = [r.strip() for r in risks.split(',')]
+                elif isinstance(risks, list):
+                    risks = [str(r).strip() for r in risks]
+                
+                # Match with defined macro risks
+                for risk in risks:
+                    risk = risk.strip()
+                    # First try exact match
+                    for themes in MACRO_RISKS.values():
+                        if risk in themes:
+                            macro_risks.add(risk)
+                            break
+                    
+                    # If no exact match, try fuzzy match
+                    if not any(risk in macro_risks):
+                        for themes in MACRO_RISKS.values():
+                            for theme in themes:
+                                if risk in theme or theme in risk:
+                                    macro_risks.add(theme)
+                                    break
+            
+            # Only create example if we have valid L2 and macro risks
+            if l2_category and macro_risks:
+                example = {
+                    "type": "risk",
+                    "text": context,
+                    "l2_category": l2_category,
+                    "macro_risks": list(macro_risks),  # Convert set back to list
+                    "metadata": {
+                        "finding_title": row['Finding_Title'],
+                        "original_l2": row['L2'] if pd.notna(row['L2']) else None,
+                        "original_risks": row['macro_risks'] if pd.notna(row['macro_risks']) else None
+                    }
+                }
+                training_examples.append(example)
+            else:
+                print(f"Warning: Skipping finding '{row['Finding_Title']}' due to missing L2 category or macro risks")
+            
+    except Exception as e:
+        print(f"Error processing findings data: {str(e)}")
+        traceback.print_exc()
+    
+    return training_examples
+
+def extract_text_from_excel(file_path: str) -> List[Dict[str, Any]]:
+    """Enhanced function to extract text from Excel files."""
+    try:
+        print(f"Reading Excel file: {file_path}")
+        
+        # Try to read all sheets
+        all_sheets = pd.read_excel(file_path, sheet_name=None)
+        training_examples = []
+        
+        for sheet_name, df in all_sheets.items():
+            print(f"Processing sheet: {sheet_name}")
+            
+            # Clean column names
+            df.columns = [str(col).strip().upper() for col in df.columns]
+            
+            # Determine the type of data based on columns
+            if any(col in df.columns for col in ['COLUMNNAME', 'PRIVACYTYPE', 'PRIVACYTYPENAME']):
+                print(f"Found privacy data in sheet {sheet_name}")
+                training_examples.extend(process_privacy_data(df))
+            elif any(col in df.columns for col in ['FINDING_TITLE', 'FINDING_DESCRIPTION']):
+                print(f"Found findings data in sheet {sheet_name}")
+                training_examples.extend(process_findings_data(df))
+            else:
+                print(f"Warning: Unknown data format in sheet {sheet_name}")
+        
+        if not training_examples:
+            print(f"Warning: No valid training examples found in {file_path}")
+        else:
+            print(f"Extracted {len(training_examples)} training examples from {file_path}")
+        
+        return training_examples
+            
+    except Exception as e:
+        print(f"Error processing Excel file {file_path}: {str(e)}")
+        traceback.print_exc()
+        return []
+
+def extract_text_from_csv(file_path: str) -> List[Dict[str, Any]]:
+    """Enhanced function to extract text from CSV files."""
+    try:
+        print(f"Reading CSV file: {file_path}")
+        
+        # Try to read with different encodings
+        encodings = ['utf-8', 'latin1', 'iso-8859-1']
+        df = None
+        
+        for encoding in encodings:
+            try:
+                df = pd.read_csv(file_path, encoding=encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        
+        if df is None:
+            raise ValueError(f"Could not read CSV file with any of the attempted encodings: {encodings}")
+        
+        # Clean column names
+        df.columns = [str(col).strip().upper() for col in df.columns]
+        
+        # Determine the type of data based on columns
+        if any(col in df.columns for col in ['COLUMNNAME', 'PRIVACYTYPE', 'PRIVACYTYPENAME']):
+            print("Found privacy data")
+            training_examples = process_privacy_data(df)
+        elif any(col in df.columns for col in ['FINDING_TITLE', 'FINDING_DESCRIPTION']):
+            print("Found findings data")
+            training_examples = process_findings_data(df)
+        else:
+            print(f"Warning: Unknown data format in {file_path}")
+            return []
+        
+        if not training_examples:
+            print(f"Warning: No valid training examples found in {file_path}")
+        else:
+            print(f"Extracted {len(training_examples)} training examples from {file_path}")
+        
+        return training_examples
+            
+    except Exception as e:
+        print(f"Error processing CSV file {file_path}: {str(e)}")
+        traceback.print_exc()
+        return []
 
 if __name__ == "__main__":
     sys.exit(main()) 
