@@ -9,6 +9,7 @@ This script handles simultaneously training the model for:
 Enhanced to automatically process raw Excel/CSV files from a folder.
 """
 
+# Standard library imports
 import os
 import json
 import csv
@@ -17,11 +18,27 @@ import pickle
 import gc
 import traceback
 import re
+import argparse
+import sys
 from typing import List, Dict, Any, Optional, Tuple, Union
+
+# Third-party imports
+import torch
+from torch.utils.data import Dataset
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    TrainingArguments,
+    Trainer,
+    DataCollatorForLanguageModeling
+)
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from datasets import load_dataset
 from tqdm import tqdm
 import pandas as pd
+import numpy as np
 
-# Import enhanced raw data processing functions
+# Local imports
 from risk_fine_tuner_enhanced import (
     scan_folder_for_files,
     extract_text_from_excel,
@@ -32,7 +49,7 @@ from risk_fine_tuner_enhanced import (
     process_folder_for_training_data
 )
 
-# Define the standardized macro risk categories and thematic risks
+# Constants and configurations
 MACRO_RISKS = {
     "1": "Operating Model & Risk Management",
     "2": "Develop and Acquire Software and Systems",
@@ -215,6 +232,31 @@ def detect_data_format(training_data_path: str) -> str:
     
     return 'unknown'
 
+def validate_training_example(example: Dict[str, Any]) -> bool:
+    """Validate a training example for required fields and formats."""
+    if not isinstance(example, dict):
+        return False
+        
+    if "type" not in example or example["type"] not in ["risk", "pii"]:
+        return False
+        
+    if "text" not in example or not isinstance(example["text"], str):
+        return False
+        
+    if example["type"] == "risk":
+        if "macro_risk" not in example or not isinstance(example["macro_risk"], str):
+            return False
+        if "risk_themes" not in example or not isinstance(example["risk_themes"], list):
+            return False
+            
+    if example["type"] == "pii":
+        if "pc_category" not in example or example["pc_category"] not in ["PC0", "PC1", "PC3"]:
+            return False
+        if "pii_types" not in example or not isinstance(example["pii_types"], list):
+            return False
+            
+    return True
+
 def load_training_file(file_path: str) -> List[Dict[str, Any]]:
     """
     Load training data from a file based on its extension.
@@ -228,22 +270,39 @@ def load_training_file(file_path: str) -> List[Dict[str, Any]]:
     file_extension = os.path.splitext(file_path)[1].lower()
     
     try:
+        if not os.path.exists(file_path):
+            print(f"Error: File not found: {file_path}")
+            return []
+            
         if file_extension == '.jsonl':
-            return load_jsonl_training_data(file_path)
+            examples = load_jsonl_training_data(file_path)
         elif file_extension == '.json':
-            return load_json_training_data(file_path)
+            examples = load_json_training_data(file_path)
         elif file_extension in ['.xlsx', '.xls', '.csv']:
-            # Process as raw data
             print(f"Processing raw data file: {file_path}")
             if file_extension in ['.xlsx', '.xls']:
                 raw_data = extract_text_from_excel(file_path)
             else:
                 raw_data = extract_text_from_csv(file_path)
-            
-            return process_raw_data_to_training_examples(raw_data)
+            examples = process_raw_data_to_training_examples(raw_data)
         else:
             print(f"Warning: Unsupported file format: {file_extension}")
             return []
+            
+        # Validate examples
+        valid_examples = []
+        invalid_count = 0
+        for example in examples:
+            if validate_training_example(example):
+                valid_examples.append(example)
+            else:
+                invalid_count += 1
+                
+        if invalid_count > 0:
+            print(f"Warning: Found {invalid_count} invalid training examples that were skipped")
+            
+        return valid_examples
+        
     except Exception as e:
         print(f"Error loading file {file_path}: {str(e)}")
         traceback.print_exc()
@@ -375,6 +434,12 @@ def process_batch(examples: List[Dict[str, Any]], file_handle) -> None:
         
         file_handle.write(json.dumps(formatted_example) + '\n')
 
+def cleanup_memory():
+    """Clean up memory to prevent leaks."""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        
 def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data") -> Optional[str]:
     """
     Fine-tune the model with the given training data on both risk and PII tasks simultaneously.
@@ -465,18 +530,6 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
         print("\nStarting fine-tuning process...")
         
         try:
-            # Import required libraries
-            from transformers import (
-                AutoModelForCausalLM, 
-                AutoTokenizer, 
-                TrainingArguments, 
-                Trainer, 
-                DataCollatorForLanguageModeling
-            )
-            from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-            from datasets import load_dataset
-            import torch
-            
             print("Loading base model: fdtn-ai/Foundation-Sec-8B")
             
             # Check device availability
@@ -500,6 +553,9 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
                 bs = 1
                 ga_steps = 8
             
+            # Clean up memory before loading model
+            cleanup_memory()
+            
             # Load model with quantization for efficiency
             model = AutoModelForCausalLM.from_pretrained(
                 "fdtn-ai/Foundation-Sec-8B",
@@ -515,6 +571,17 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
             tokenizer = AutoTokenizer.from_pretrained("fdtn-ai/Foundation-Sec-8B")
             if tokenizer.pad_token is None:
                 tokenizer.pad_token = tokenizer.eos_token
+            
+            # Set up chat template
+            tokenizer.chat_template = '''{% for message in messages %}
+{% if message['role'] == 'system' %}{% if not loop.first %}{{ '\n' }}{% endif %}{{ message['content'] }}
+{% elif message['role'] == 'user' %}
+User: {{ message['content'] }}
+{% elif message['role'] == 'assistant' %}
+Assistant: {{ message['content'] }}
+{% endif %}
+{% endfor %}
+Assistant: '''
 
             # Configure LoRA for parameter-efficient fine-tuning
             lora_config = LoraConfig(
@@ -586,7 +653,8 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
                     save_total_limit=3,
                     logging_first_step=True,
                     dataloader_num_workers=4 if device == "cuda" else 0,
-                    dataloader_drop_last=True
+                    dataloader_drop_last=True,
+                    max_grad_norm=1.0
                 ),
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
@@ -606,9 +674,7 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
             # Clean up memory
             del model
             del trainer
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            cleanup_memory()
             
             # Create the pickle file for inference
             pickle_path = os.path.join(output_dir, "unified_model_with_categories.pkl")
@@ -642,38 +708,19 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
             return None
             
         except Exception as e:
+            cleanup_memory()  # Clean up memory on error
             print(f"\n❌ Error during fine-tuning: {str(e)}")
             traceback.print_exc()
+            return None
             
-            # Even if fine-tuning fails, create a basic inference package for testing
-            print("\nCreating basic inference package for testing...")
-            pickle_path = os.path.join(output_dir, "basic_inference_package.pkl")
-            
-            basic_package = {
-                "model_path": "fdtn-ai/Foundation-Sec-8B",  # Use base model
-                "unified": True,
-                "macro_risks": MACRO_RISKS,
-                "thematic_risks": THEMATIC_RISKS,
-                "pii_protection_categories": PII_PROTECTION_CATEGORIES,
-                "pii_types": PII_TYPES
-            }
-            
-            with open(pickle_path, 'wb') as f:
-                pickle.dump(basic_package, f)
-                
-            print(f"📦 Basic inference package created at: {pickle_path}")
-            print("⚠️  This uses the base model (not fine-tuned)")
-            return pickle_path
-        
     except Exception as e:
+        cleanup_memory()  # Clean up memory on error
         print(f"Fine-tuning failed: {str(e)}")
         traceback.print_exc()
         return None
 
 def main():
     """Main function with enhanced raw data processing capabilities."""
-    import argparse
-    
     parser = argparse.ArgumentParser(description="Enhanced Risk & PII Fine-Tuner")
     parser.add_argument("--training-data", required=True, 
                        help="Path to training data (can be a file or folder with raw Excel/CSV files)")
@@ -705,12 +752,15 @@ def main():
         if result:
             print(f"\n✅ Fine-tuning completed successfully!")
             print(f"Model saved to: {result}")
+            return 0
         else:
             print(f"\n❌ Fine-tuning failed!")
+            return 1
             
     except Exception as e:
         print(f"Error: {e}")
         traceback.print_exc()
+        return 1
 
 if __name__ == "__main__":
-    main() 
+    sys.exit(main()) 
