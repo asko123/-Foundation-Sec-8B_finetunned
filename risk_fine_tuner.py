@@ -3,7 +3,7 @@
 Unified Risk & PII Fine-Tuner - A tool for fine-tuning the Foundation-Sec-8B model.
 
 This script handles simultaneously training the model for:
-1. Security risk categorization
+1. Security risk categorization with L2 and Macro Risk classification
 2. PII detection with PC0/PC1/PC3 classification
 
 Enhanced to automatically process raw Excel/CSV files from a folder.
@@ -50,7 +50,7 @@ from risk_fine_tuner_enhanced import (
 )
 
 # Constants and configurations
-MACRO_RISKS = {
+L2 = {
     "1": "Operating Model & Risk Management",
     "2": "Develop and Acquire Software and Systems",
     "3": "Manage & Demise IT Assets",
@@ -65,7 +65,7 @@ MACRO_RISKS = {
     "12": "Manage Business Continuity and Disaster Recovery"
 }
 
-THEMATIC_RISKS = {
+MACRO_RISKS = {
     "1": [
         "Policy/Standard Review",
         "KCI / KRI completeness",
@@ -167,13 +167,13 @@ PII_TYPES = [
 def format_all_categories_for_prompt() -> str:
     """Format all categories (risk and PII) for inclusion in prompts."""
     categories_text = "PART 1: SECURITY RISK CATEGORIES\n\n"
-    categories_text += "Standardized Macro Risk Categories:\n"
-    for key, value in MACRO_RISKS.items():
+    categories_text += "L2 Categories:\n"
+    for key, value in L2.items():
         categories_text += f"{key}. {value}\n"
     
-    categories_text += "\nThematic Risks for each Macro Risk Category:\n"
-    for key, themes in THEMATIC_RISKS.items():
-        categories_text += f"\n{key}. {MACRO_RISKS[key]}:\n"
+    categories_text += "\nMacro Risks for each L2 Category:\n"
+    for key, themes in MACRO_RISKS.items():
+        categories_text += f"\n{key}. {L2[key]}:\n"
         for theme in themes:
             categories_text += f"   - {theme}\n"
     
@@ -244,9 +244,9 @@ def validate_training_example(example: Dict[str, Any]) -> bool:
         return False
         
     if example["type"] == "risk":
-        if "macro_risk" not in example or not isinstance(example["macro_risk"], str):
+        if "l2_category" not in example or not isinstance(example["l2_category"], str):
             return False
-        if "risk_themes" not in example or not isinstance(example["risk_themes"], list):
+        if "macro_risks" not in example or not isinstance(example["macro_risks"], list):
             return False
             
     if example["type"] == "pii":
@@ -351,19 +351,19 @@ def format_risk_example(example, categories):
     """Format a risk categorization example for fine-tuning."""
     try:
         text = example["text"]
-        macro_risk = example["macro_risk"]
-        risk_themes = example["risk_themes"]
+        l2_category = example["l2_category"]
+        macro_risks = example["macro_risks"]
         
         # Format for fine-tuning in Llama chat format with enhanced prompting
         return {
             "messages": [
                 {
                     "role": "system",
-                    "content": f"You are an expert cybersecurity risk analyst with extensive experience in categorizing security findings according to standardized risk frameworks. Your task is to analyze security risk findings and correctly identify both the macro risk category and specific risk themes.\n\nYou must use ONLY the standardized categories provided below.\n\n{categories}\n\nGuidelines for risk categorization:\n1. Each security finding belongs to exactly ONE macro risk category - select the most appropriate match\n2. Security findings often exhibit multiple risk themes within their macro category\n3. Macro categories represent broad areas of security concern, while thematic risks are specific vulnerabilities or weaknesses\n4. You must only select thematic risks that belong to the chosen macro risk category\n5. You must never invent new categories or themes\n6. IMPORTANT: The numbers assigned to each macro risk category (1, 2, 3, etc.) are just identifiers - focus on the text descriptions when determining the appropriate category\n\nContext: Security risk categorization is critical for organizations to standardize their approach to risk management, ensure comprehensive coverage across all risk domains, and enable consistent prioritization and remediation."
+                    "content": f"You are an expert cybersecurity risk analyst with extensive experience in categorizing security findings according to standardized risk frameworks. Your task is to analyze security risk findings and correctly identify both the L2 category and specific macro risks.\n\nYou must use ONLY the standardized categories provided below.\n\n{categories}\n\nGuidelines for risk categorization:\n1. Each security finding belongs to exactly ONE L2 category - select the most appropriate match\n2. Security findings often exhibit multiple macro risks within their L2 category\n3. L2 categories represent broad areas of security concern, while macro risks are specific vulnerabilities or weaknesses\n4. You must only select macro risks that belong to the chosen L2 category\n5. You must never invent new categories or risks\n6. IMPORTANT: The numbers assigned to each L2 category (1, 2, 3, etc.) are just identifiers - focus on the text descriptions when determining the appropriate category\n\nContext: Security risk categorization is critical for organizations to standardize their approach to risk management, ensure comprehensive coverage across all risk domains, and enable consistent prioritization and remediation."
                 },
                 {
                     "role": "user",
-                    "content": f"I need to analyze a security risk finding to identify the macro risk category and specific risk themes.\n\nText to analyze:\n{text}\n\nIs this a security risk finding or text with potential PII?"
+                    "content": f"I need to analyze a security risk finding to identify the L2 category and specific macro risks.\n\nText to analyze:\n{text}\n\nIs this a security risk finding or text with potential PII?"
                 },
                 {
                     "role": "assistant",
@@ -371,11 +371,11 @@ def format_risk_example(example, categories):
                 },
                 {
                     "role": "user",
-                    "content": "Please provide your risk analysis in a structured JSON format with:\n1. 'macro_risk': Select ONE macro risk category from the standardized list (include both the number and name)\n2. 'risk_themes': Provide an array of specific risk themes from the corresponding thematic risks list\n\nAnalyze the finding carefully to ensure accurate categorization. Focus on the description of the macro risk categories, not their numbers."
+                    "content": "Please provide your risk analysis in a structured JSON format with:\n1. 'l2_category': Select ONE L2 category from the standardized list (include both the number and name)\n2. 'macro_risks': Provide an array of specific macro risks from the corresponding list\n\nAnalyze the finding carefully to ensure accurate categorization. Focus on the description of the L2 categories, not their numbers."
                 },
                 {
                     "role": "assistant",
-                    "content": f"{{\n  \"macro_risk\": \"{macro_risk}\",\n  \"risk_themes\": {json.dumps(risk_themes, indent=2)}\n}}"
+                    "content": f"{{\n  \"l2_category\": \"{l2_category}\",\n  \"macro_risks\": {json.dumps(macro_risks, indent=2)}\n}}"
                 }
             ]
         }
@@ -511,6 +511,18 @@ def format_chat(example, tokenizer, device):
     
     # Convert to tensor and move to correct device
     return {"input_ids": torch.tensor(input_ids, device=device)}
+
+def create_inference_package(model_path: str, is_fallback: bool = False) -> Dict[str, Any]:
+    """Create the inference package with the correct format."""
+    return {
+        "model_path": model_path,
+        "unified": True,
+        "l2": L2,
+        "macro_risks": MACRO_RISKS,
+        "pii_protection_categories": PII_PROTECTION_CATEGORIES,
+        "pii_types": PII_TYPES,
+        "is_fallback": is_fallback
+    }
 
 def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data") -> Optional[str]:
     """
@@ -744,20 +756,11 @@ Assistant: '''
             del trainer
             cleanup_memory()
             
-            # Create the pickle file for inference
+            # Create the inference package
             pickle_path = os.path.join(output_dir, "unified_model_with_categories.pkl")
             print(f"Creating inference package at: {pickle_path}")
             
-            # Create the inference package with the exact format that risk_inference.py expects
-            inference_package = {
-                "model_path": final_model_path,
-                "unified": True,
-                "macro_risks": MACRO_RISKS,
-                "thematic_risks": THEMATIC_RISKS,
-                "pii_protection_categories": PII_PROTECTION_CATEGORIES,
-                "pii_types": PII_TYPES
-            }
-            
+            inference_package = create_inference_package(final_model_path)
             with open(pickle_path, 'wb') as f:
                 pickle.dump(inference_package, f)
             
