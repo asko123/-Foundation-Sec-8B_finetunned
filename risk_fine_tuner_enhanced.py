@@ -25,22 +25,17 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 from tqdm import tqdm
 import pandas as pd
 
-# Define the standardized macro risk categories and thematic risks
-MACRO_RISKS = {
-    "1": "Operating Model & Risk Management",
-    "2": "Develop and Acquire Software and Systems",
-    "3": "Manage & Demise IT Assets",
-    "4": "Manage Data",
-    "5": "Protect Data",
-    "6": "Identity & Access Management",
-    "7": "Manage Infrastructure",
-    "8": "Manage IT Vulnerabilities & Patching",
-    "9": "Manage Technology Capacity & Resources",
-    "10": "Monitor & Respond to Technology Incidents",
-    "11": "Monitor and Respond to Security Incidents",
-    "12": "Manage Business Continuity and Disaster Recovery"
-}
+# Import constants from main file
+from risk_fine_tuner import (
+    L2,
+    MACRO_RISKS,
+    PII_PROTECTION_CATEGORIES,
+    PII_TYPES,
+    PRIVACY_CLASSIFICATIONS,
+    SENSITIVITY_LEVELS
+)
 
+# Define the standardized macro risk categories and thematic risks
 THEMATIC_RISKS = {
     "1": [
         "Policy/Standard Review",
@@ -126,20 +121,6 @@ THEMATIC_RISKS = {
     ]
 }
 
-# Define PII protection categories
-PII_PROTECTION_CATEGORIES = {
-    "PC0": "Public information with no confidentiality requirements",
-    "PC1": "Internal information with basic confidentiality requirements",
-    "PC3": "Confidential information with high protection requirements"
-}
-
-# Define common PII types for reference
-PII_TYPES = [
-    "Name", "Email", "Phone", "Address", "SSN", "Financial", "Health", 
-    "Credentials", "Biometric", "National ID", "DOB", "Gender",
-    "Location", "IP Address", "Device ID", "Customer ID", "Employment"
-]
-
 # Keywords for risk category identification
 RISK_KEYWORDS = {
     "1": ["policy", "standard", "governance", "framework", "control", "baseline", "training", "awareness", "maturity", "monitoring", "testing", "kci", "kri", "exception", "tolerance", "issue management"],
@@ -164,266 +145,54 @@ PII_KEYWORDS = {
 }
 
 def scan_folder_for_files(folder_path: str) -> List[str]:
-    """
-    Scan a folder and return all Excel, CSV, and JSON files for processing.
-    
-    Args:
-        folder_path: Path to the folder to scan
-        
-    Returns:
-        List of file paths to process
-    """
-    supported_extensions = ['.xlsx', '.xls', '.csv', '.json', '.jsonl']
+    """Scan folder for Excel and CSV files."""
+    supported_extensions = ['.xlsx', '.xls', '.csv']
     files_to_process = []
     
-    if not os.path.exists(folder_path):
-        print(f"Error: Folder {folder_path} does not exist")
-        return []
-    
-    print(f"Scanning folder: {folder_path}")
-    
-    for root, dirs, files in os.walk(folder_path):
+    for root, _, files in os.walk(folder_path):
         for file in files:
-            file_path = os.path.join(root, file)
-            file_ext = os.path.splitext(file)[1].lower()
-            
-            if file_ext in supported_extensions:
-                files_to_process.append(file_path)
-                print(f"Found file: {file}")
+            if any(file.lower().endswith(ext) for ext in supported_extensions):
+                files_to_process.append(os.path.join(root, file))
     
-    print(f"Found {len(files_to_process)} files to process")
     return files_to_process
 
-def extract_text_from_excel(file_path: str) -> List[Dict[str, Any]]:
+def analyze_content_for_risk_category(text: str) -> Tuple[str, List[str], float]:
     """
-    Extract text content from Excel files and create raw data entries.
-    
-    Args:
-        file_path: Path to the Excel file
-        
-    Returns:
-        List of extracted text entries with metadata
-    """
-    extracted_data = []
-    
-    try:
-        # Read all sheets from the Excel file
-        excel_file = pd.ExcelFile(file_path)
-        print(f"Processing Excel file: {file_path}")
-        print(f"Found sheets: {excel_file.sheet_names}")
-        
-        for sheet_name in excel_file.sheet_names:
-            try:
-                df = pd.read_excel(file_path, sheet_name=sheet_name)
-                print(f"Processing sheet '{sheet_name}' with {len(df)} rows and {len(df.columns)} columns")
-                
-                # Extract column headers as context
-                headers = [str(col) for col in df.columns if not str(col).startswith('Unnamed')]
-                
-                # Process each row
-                for index, row in df.iterrows():
-                    # Combine all non-null values in the row as text
-                    row_text_parts = []
-                    row_data = {}
-                    
-                    for col_index, value in enumerate(row):
-                        if pd.notna(value) and str(value).strip():
-                            col_name = headers[col_index] if col_index < len(headers) else f"Column_{col_index}"
-                            text_value = str(value).strip()
-                            row_text_parts.append(f"{col_name}: {text_value}")
-                            row_data[col_name] = text_value
-                    
-                    if row_text_parts:
-                        combined_text = " | ".join(row_text_parts)
-                        
-                        extracted_data.append({
-                            "text": combined_text,
-                            "source_file": os.path.basename(file_path),
-                            "sheet_name": sheet_name,
-                            "row_number": index + 2,  # +2 for 1-indexing and header
-                            "headers": headers,
-                            "raw_data": row_data
-                        })
-            
-            except Exception as e:
-                print(f"Error processing sheet '{sheet_name}': {str(e)}")
-                continue
-                
-    except Exception as e:
-        print(f"Error processing Excel file {file_path}: {str(e)}")
-        
-    return extracted_data
-
-def extract_text_from_csv(file_path: str) -> List[Dict[str, Any]]:
-    """
-    Extract text content from CSV files and create raw data entries.
-    
-    Args:
-        file_path: Path to the CSV file
-        
-    Returns:
-        List of extracted text entries with metadata
-    """
-    extracted_data = []
-    
-    try:
-        print(f"Processing CSV file: {file_path}")
-        
-        with open(file_path, 'r', encoding='utf-8') as f:
-            # Try to detect if there are headers
-            sample = f.read(1024)
-            f.seek(0)
-            sniffer = csv.Sniffer()
-            has_header = sniffer.has_header(sample)
-            
-            reader = csv.reader(f)
-            
-            # Read headers if they exist
-            headers = []
-            if has_header:
-                headers = next(reader)
-            else:
-                # Create default headers
-                first_row = next(reader)
-                headers = [f"Column_{i}" for i in range(len(first_row))]
-                # Process the first row since we already read it
-                if first_row:
-                    row_text_parts = []
-                    row_data = {}
-                    
-                    for col_index, value in enumerate(first_row):
-                        if value and value.strip():
-                            col_name = headers[col_index] if col_index < len(headers) else f"Column_{col_index}"
-                            text_value = value.strip()
-                            row_text_parts.append(f"{col_name}: {text_value}")
-                            row_data[col_name] = text_value
-                    
-                    if row_text_parts:
-                        combined_text = " | ".join(row_text_parts)
-                        extracted_data.append({
-                            "text": combined_text,
-                            "source_file": os.path.basename(file_path),
-                            "row_number": 1,
-                            "headers": headers,
-                            "raw_data": row_data
-                        })
-            
-            # Process remaining rows
-            for row_index, row in enumerate(reader):
-                if not row:
-                    continue
-                    
-                row_text_parts = []
-                row_data = {}
-                
-                for col_index, value in enumerate(row):
-                    if value and value.strip():
-                        col_name = headers[col_index] if col_index < len(headers) else f"Column_{col_index}"
-                        text_value = value.strip()
-                        row_text_parts.append(f"{col_name}: {text_value}")
-                        row_data[col_name] = text_value
-                
-                if row_text_parts:
-                    combined_text = " | ".join(row_text_parts)
-                    extracted_data.append({
-                        "text": combined_text,
-                        "source_file": os.path.basename(file_path),
-                        "row_number": row_index + (2 if has_header else 1),
-                        "headers": headers,
-                        "raw_data": row_data
-                    })
-                    
-    except Exception as e:
-        print(f"Error processing CSV file {file_path}: {str(e)}")
-        
-    return extracted_data
-
-def analyze_content_for_risk_category(text: str) -> Tuple[Optional[str], List[str], float]:
-    """
-    Analyze text content to identify the most likely risk category and themes.
+    Analyze text content to identify L2 category and macro risks.
     
     Args:
         text: Text content to analyze
         
     Returns:
-        Tuple of (macro_risk_id, risk_themes, confidence_score)
+        Tuple of (l2_category, macro_risks, confidence_score)
     """
     text_lower = text.lower()
-    category_scores = {}
     
-    # Score each category based on keyword matches
-    for category_id, keywords in RISK_KEYWORDS.items():
-        score = 0
-        matched_keywords = []
+    # Initialize variables
+    best_l2 = None
+    best_l2_score = 0
+    identified_risks = set()
+    
+    # Check each L2 category
+    for key, value in L2.items():
+        value_lower = value.lower()
+        # Calculate similarity score (simple word overlap for now)
+        words = set(value_lower.split()) & set(text_lower.split())
+        score = len(words) / len(value_lower.split())
         
-        for keyword in keywords:
-            if keyword in text_lower:
-                score += 1
-                matched_keywords.append(keyword)
-        
-        if score > 0:
-            # Normalize score by number of keywords in category
-            normalized_score = score / len(keywords)
-            category_scores[category_id] = {
-                "score": normalized_score,
-                "matched_keywords": matched_keywords,
-                "raw_score": score
-            }
+        if score > best_l2_score:
+            best_l2_score = score
+            best_l2 = f"{key}. {value}"
     
-    if not category_scores:
-        return None, [], 0.0
+    # Check for macro risks within the identified L2 category
+    if best_l2:
+        l2_key = best_l2.split('.')[0]
+        for risk in MACRO_RISKS.get(l2_key, []):
+            risk_lower = risk.lower()
+            if any(word in text_lower for word in risk_lower.split()):
+                identified_risks.add(risk)
     
-    # Find the best matching category
-    best_category = max(category_scores.keys(), key=lambda x: category_scores[x]["score"])
-    best_score = category_scores[best_category]["score"]
-    
-    # Map matched keywords to thematic risks
-    matched_themes = []
-    available_themes = THEMATIC_RISKS[best_category]
-    
-    for theme in available_themes:
-        theme_lower = theme.lower()
-        # Check if any part of the theme appears in the text
-        theme_words = theme_lower.split()
-        if any(word in text_lower for word in theme_words if len(word) > 3):
-            matched_themes.append(theme)
-    
-    # If no themes matched, try to infer from the best matching keywords
-    if not matched_themes:
-        matched_keywords = category_scores[best_category]["matched_keywords"]
-        
-        # Map keywords to potential themes (simplified heuristic)
-        if best_category == "1" and any(kw in matched_keywords for kw in ["policy", "standard", "governance"]):
-            matched_themes.append("Policy/Standard Review")
-        elif best_category == "2" and any(kw in matched_keywords for kw in ["change", "implementation"]):
-            matched_themes.append("Change Process (Standards & Emergency)")
-        elif best_category == "3" and any(kw in matched_keywords for kw in ["inventory", "asset"]):
-            matched_themes.append("Inventory Accuracy & Completeness")
-        elif best_category == "4" and any(kw in matched_keywords for kw in ["data"]):
-            matched_themes.append("Data Identification, Inventory & Lineage")
-        elif best_category == "5" and any(kw in matched_keywords for kw in ["encryption", "protection"]):
-            matched_themes.append("Encryption (At Rest, Use, Transit)")
-        elif best_category == "6" and any(kw in matched_keywords for kw in ["access", "authentication"]):
-            matched_themes.append("Authentication")
-        elif best_category == "7" and any(kw in matched_keywords for kw in ["configuration", "infrastructure"]):
-            matched_themes.append("Configuration Management")
-        elif best_category == "8" and any(kw in matched_keywords for kw in ["vulnerability", "patching"]):
-            matched_themes.append("Vulnerability assessment and risk treatment")
-        elif best_category == "9" and any(kw in matched_keywords for kw in ["capacity", "monitoring"]):
-            matched_themes.append("Capacity Planning")
-        elif best_category == "10" and any(kw in matched_keywords for kw in ["incident"]):
-            matched_themes.append("Incident Identification & Classification")
-        elif best_category == "11" and any(kw in matched_keywords for kw in ["security incident", "response"]):
-            matched_themes.append("Incident Response Planning")
-        elif best_category == "12" and any(kw in matched_keywords for kw in ["resilience", "continuity"]):
-            matched_themes.append("Operational Resiliency")
-    
-    # Ensure we have at least one theme
-    if not matched_themes and best_category in THEMATIC_RISKS:
-        # Use the first theme as a fallback
-        matched_themes.append(THEMATIC_RISKS[best_category][0])
-    
-    return best_category, matched_themes, best_score
+    return best_l2, list(identified_risks), best_l2_score
 
 def analyze_content_for_pii(text: str) -> Tuple[str, List[str], float]:
     """
@@ -437,163 +206,143 @@ def analyze_content_for_pii(text: str) -> Tuple[str, List[str], float]:
     """
     text_lower = text.lower()
     
-    # Check for high-sensitivity PII (PC3)
-    pc3_indicators = 0
-    pc3_types = []
+    # Initialize variables
+    identified_pii = set()
+    confidence_score = 0
     
+    # Check for PII types
     for pii_type in PII_TYPES:
         type_lower = pii_type.lower()
         if type_lower in text_lower:
-            if pii_type in ["SSN", "Financial", "Health", "Credentials", "Biometric", "National ID"]:
-                pc3_indicators += 1
-                pc3_types.append(pii_type)
+            identified_pii.add(pii_type)
+            confidence_score += 0.2  # Increase confidence for each PII type found
     
-    # Specific pattern checks for PC3
-    patterns_pc3 = [
-        r'\b\d{3}-\d{2}-\d{4}\b',  # SSN pattern
-        r'\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b',  # Credit card pattern
-        r'\bpassword\b', r'\bcredential\b', r'\bauth\b',
-        r'\bmedical\b', r'\bhealth\b', r'\bhipaa\b',
-        r'\bbiometric\b', r'\bfingerprint\b'
-    ]
+    # Check for specific patterns
+    patterns = {
+        r'\b\d{3}[-.]?\d{2}[-.]?\d{4}\b': 'SSN',  # SSN pattern
+        r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b': 'Email',  # Email
+        r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b': 'Phone',  # Phone
+        r'\b\d{1,5}\s+[A-Za-z\s]{2,30}\s+(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard)\b': 'Address',
+        r'\b(?:19|20)\d{2}[-/]\d{1,2}[-/]\d{1,2}\b': 'DOB'  # Date pattern
+    }
     
-    for pattern in patterns_pc3:
-        if re.search(pattern, text_lower):
-            pc3_indicators += 1
-            if pattern.startswith(r'\bpassword') or pattern.startswith(r'\bcredential'):
-                pc3_types.append("Credentials")
-            elif pattern.startswith(r'\bmedical') or pattern.startswith(r'\bhealth'):
-                pc3_types.append("Health")
-            elif pattern.startswith(r'\bbiometric'):
-                pc3_types.append("Biometric")
-            elif pattern.startswith(r'\b\d{3}-\d{2}'):
-                pc3_types.append("SSN")
-            elif pattern.startswith(r'\b\d{4}'):
-                pc3_types.append("Financial")
+    for pattern, pii_type in patterns.items():
+        if re.search(pattern, text):
+            identified_pii.add(pii_type)
+            confidence_score += 0.3  # Higher confidence for pattern matches
     
-    if pc3_indicators > 0:
-        return "PC3", list(set(pc3_types)), min(1.0, pc3_indicators * 0.3)
+    # Determine privacy classification
+    if any(pii in identified_pii for pii in ['SSN', 'Financial', 'Health', 'DOB']):
+        pc_category = 'PC3'
+        confidence_score = min(1.0, confidence_score + 0.4)
+    elif identified_pii:
+        pc_category = 'PC1'
+        confidence_score = min(1.0, confidence_score + 0.2)
+    else:
+        pc_category = 'PC0'
+        confidence_score = max(0.1, confidence_score)
     
-    # Check for medium-sensitivity PII (PC1)
-    pc1_indicators = 0
-    pc1_types = []
-    
-    for pii_type in PII_TYPES:
-        type_lower = pii_type.lower()
-        if type_lower in text_lower:
-            if pii_type in ["Name", "Email", "Phone", "Address", "Customer ID", "Employment"]:
-                pc1_indicators += 1
-                pc1_types.append(pii_type)
-    
-    # Specific pattern checks for PC1
-    patterns_pc1 = [
-        r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',  # Email pattern
-        r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b',  # Phone pattern
-        r'\b[A-Z][a-z]+ [A-Z][a-z]+\b'     # Name pattern
-    ]
-    
-    for pattern in patterns_pc1:
-        if re.search(pattern, text_lower):
-            pc1_indicators += 1
-            if pattern.startswith(r'\b[A-Za-z0-9._%+-]+@'):
-                pc1_types.append("Email")
-            elif pattern.startswith(r'\b\d{3}'):
-                pc1_types.append("Phone")
-            elif pattern.startswith(r'\b[A-Z][a-z]+ [A-Z]'):
-                pc1_types.append("Name")
-    
-    if pc1_indicators > 0:
-        return "PC1", list(set(pc1_types)), min(1.0, pc1_indicators * 0.2)
-    
-    # Default to PC0 (Public)
-    return "PC0", [], 0.1
+    return pc_category, list(identified_pii), confidence_score
 
-def process_raw_data_to_training_examples(raw_data_entries: List[Dict[str, Any]], min_confidence: float = 0.1) -> List[Dict[str, Any]]:
-    """
-    Process raw data entries and convert them to training examples.
-    
-    Args:
-        raw_data_entries: List of raw data entries from files
-        min_confidence: Minimum confidence threshold for including examples
-        
-    Returns:
-        List of training examples
-    """
+def process_raw_data_to_training_examples(raw_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Process raw data entries into training examples."""
     training_examples = []
     
-    print(f"Processing {len(raw_data_entries)} raw data entries...")
-    
-    for entry in tqdm(raw_data_entries, desc="Analyzing content"):
-        text = entry["text"]
-        
-        # Skip very short text entries
-        if len(text.strip()) < 20:
+    for entry in raw_data:
+        # Skip empty entries
+        if not entry:
             continue
         
-        # Analyze for risk categorization
-        risk_category, risk_themes, risk_confidence = analyze_content_for_risk_category(text)
-        
-        if risk_category and risk_themes and risk_confidence >= min_confidence:
-            macro_risk = f"{risk_category}. {MACRO_RISKS[risk_category]}"
+        # Try to determine if this is a finding or PII data
+        text = ""
+        if 'Finding_Title' in entry and 'Finding_Description' in entry:
+            # This is a finding
+            text = f"Finding: {entry['Finding_Title']}\n\n"
+            if entry.get('Finding_Description'):
+                text += f"Description: {entry['Finding_Description']}"
             
-            training_examples.append({
-                "type": "risk",
-                "text": text,
-                "macro_risk": macro_risk,
-                "risk_themes": risk_themes,
-                "confidence": risk_confidence,
-                "source_file": entry["source_file"],
-                "metadata": {
-                    "sheet_name": entry.get("sheet_name"),
-                    "row_number": entry.get("row_number"),
-                    "extraction_method": "automated_analysis"
+            # Use provided L2 and macro_risks if available
+            if entry.get('L2') and entry.get('macro_risks'):
+                example = {
+                    "type": "risk",
+                    "text": text,
+                    "l2_category": entry['L2'],
+                    "macro_risks": entry['macro_risks'] if isinstance(entry['macro_risks'], list) else [entry['macro_risks']],
+                    "metadata": {
+                        "source": "raw_data",
+                        "original_l2": entry['L2'],
+                        "original_risks": entry['macro_risks']
+                    }
                 }
-            })
-        
-        # Analyze for PII classification
-        pc_category, pii_types, pii_confidence = analyze_content_for_pii(text)
-        
-        if pii_confidence >= min_confidence:
-            training_examples.append({
-                "type": "pii",
-                "text": text,
-                "pc_category": pc_category,
-                "pii_types": pii_types,
-                "confidence": pii_confidence,
-                "source_file": entry["source_file"],
-                "metadata": {
-                    "sheet_name": entry.get("sheet_name"),
-                    "row_number": entry.get("row_number"),
-                    "extraction_method": "automated_analysis"
+            else:
+                # Analyze content to determine categories
+                l2_category, macro_risks, confidence = analyze_content_for_risk_category(text)
+                if confidence > 0.2:  # Only include if we have reasonable confidence
+                    example = {
+                        "type": "risk",
+                        "text": text,
+                        "l2_category": l2_category,
+                        "macro_risks": macro_risks,
+                        "metadata": {
+                            "source": "analyzed",
+                            "confidence": confidence
+                        }
+                    }
+                else:
+                    continue
+                    
+            training_examples.append(example)
+            
+        elif 'COLUMNNAME' in entry and 'PRIVACYTYPE' in entry:
+            # This is PII data
+            text = f"Database Column: {entry['COLUMNNAME']}\n"
+            if entry.get('ENTITYNAME'):
+                text += f"Entity: {entry['ENTITYNAME']}\n"
+            if entry.get('ENTITYDESC'):
+                text += f"Description: {entry['ENTITYDESC']}\n"
+            if entry.get('PRIVACYTYPEDESCRIPTION'):
+                text += f"Privacy Description: {entry['PRIVACYTYPEDESCRIPTION']}\n"
+            
+            # Use provided classification if available
+            if entry.get('PRIVACYTYPECLASSIFICATION'):
+                classification = str(entry['PRIVACYTYPECLASSIFICATION']).upper()
+                if "PUBLIC" in classification or "DP10" in classification:
+                    pc_category = "PC0"
+                elif any(level in classification for level in ["CONFIDENTIAL", "DP30", "HIGHLY RESTRICTED"]):
+                    pc_category = "PC3"
+                else:
+                    pc_category = "PC1"
+                
+                example = {
+                    "type": "pii",
+                    "text": text,
+                    "pc_category": pc_category,
+                    "pii_types": [],  # Will be filled by analysis
+                    "metadata": {
+                        "source": "raw_data",
+                        "original_classification": entry['PRIVACYTYPECLASSIFICATION'],
+                        "privacy_type": entry.get('PRIVACYTYPE'),
+                        "privacy_name": entry.get('PRIVACYTYPENAME')
+                    }
                 }
-            })
-    
-    print(f"Generated {len(training_examples)} training examples from raw data")
-    
-    # Print summary statistics
-    risk_examples = [ex for ex in training_examples if ex["type"] == "risk"]
-    pii_examples = [ex for ex in training_examples if ex["type"] == "pii"]
-    
-    print(f"Risk examples: {len(risk_examples)}")
-    print(f"PII examples: {len(pii_examples)}")
-    
-    if risk_examples:
-        risk_categories = {}
-        for ex in risk_examples:
-            cat = ex["macro_risk"].split(".")[0]
-            risk_categories[cat] = risk_categories.get(cat, 0) + 1
-        print("Risk category distribution:")
-        for cat, count in sorted(risk_categories.items()):
-            print(f"  Category {cat}: {count} examples")
-    
-    if pii_examples:
-        pii_categories = {}
-        for ex in pii_examples:
-            cat = ex["pc_category"]
-            pii_categories[cat] = pii_categories.get(cat, 0) + 1
-        print("PII category distribution:")
-        for cat, count in sorted(pii_categories.items()):
-            print(f"  {cat}: {count} examples")
+            else:
+                # Analyze content to determine PII
+                pc_category, pii_types, confidence = analyze_content_for_pii(text)
+                if confidence > 0.2:  # Only include if we have reasonable confidence
+                    example = {
+                        "type": "pii",
+                        "text": text,
+                        "pc_category": pc_category,
+                        "pii_types": pii_types,
+                        "metadata": {
+                            "source": "analyzed",
+                            "confidence": confidence
+                        }
+                    }
+                else:
+                    continue
+                    
+            training_examples.append(example)
     
     return training_examples
 

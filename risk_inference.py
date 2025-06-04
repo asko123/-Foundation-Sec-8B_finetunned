@@ -35,8 +35,11 @@ def load_inference_model(pickle_path: str) -> Tuple:
         
         model_path = inference_package['model_path']
         unified = inference_package.get('unified', False)
+        is_fallback = inference_package.get('is_fallback', False)
         
         print(f"Loading model from {model_path} ({'unified' if unified else 'task-specific'} model)")
+        if is_fallback:
+            print("⚠️  Using fallback model (fine-tuning was not successful)")
         
         # Check if CUDA is available
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -55,11 +58,15 @@ def load_inference_model(pickle_path: str) -> Tuple:
         
         # Extract the categories from the package
         categories = {}
+        if 'l2' in inference_package:
+            categories['l2'] = inference_package['l2']
+        elif 'macro_risks' in inference_package:  # For backward compatibility
+            categories['l2'] = inference_package['macro_risks']
+            
         if 'macro_risks' in inference_package:
             categories['macro_risks'] = inference_package['macro_risks']
-        
-        if 'thematic_risks' in inference_package:
-            categories['thematic_risks'] = inference_package['thematic_risks']
+        elif 'thematic_risks' in inference_package:  # For backward compatibility
+            categories['macro_risks'] = inference_package['thematic_risks']
             
         if 'pii_protection_categories' in inference_package:
             categories['pii_protection_categories'] = inference_package['pii_protection_categories']
@@ -71,9 +78,9 @@ def load_inference_model(pickle_path: str) -> Tuple:
         if not unified:
             if 'task_type' in inference_package:
                 categories['task_type'] = inference_package['task_type']
-            elif 'macro_risks' in inference_package and 'pii_protection_categories' not in inference_package:
+            elif 'l2' in inference_package and 'pii_protection_categories' not in inference_package:
                 categories['task_type'] = 'risk'
-            elif 'pii_protection_categories' in inference_package and 'macro_risks' not in inference_package:
+            elif 'pii_protection_categories' in inference_package and 'l2' not in inference_package:
                 categories['task_type'] = 'pii'
             else:
                 categories['task_type'] = 'unified'
@@ -89,38 +96,33 @@ def load_inference_model(pickle_path: str) -> Tuple:
 
 def format_all_categories_for_prompt(categories: Dict) -> str:
     """Format all categories for inclusion in prompts."""
-    categories_text = ""
+    text = "PART 1: SECURITY RISK CATEGORIES\n\n"
     
-    # Add risk categories if available
-    if 'macro_risks' in categories and 'thematic_risks' in categories:
-        categories_text += "PART 1: SECURITY RISK CATEGORIES\n\n"
-        categories_text += "Standardized Macro Risk Categories:\n"
-        for key, value in categories['macro_risks'].items():
-            categories_text += f"{key}. {value}\n"
+    # Format L2 categories
+    if 'l2' in categories:
+        text += "L2 Categories:\n"
+        for key, value in categories['l2'].items():
+            text += f"{key}. {value}\n"
         
-        categories_text += "\nThematic Risks for each Macro Risk Category:\n"
-        for key, themes in categories['thematic_risks'].items():
-            categories_text += f"\n{key}. {categories['macro_risks'][key]}:\n"
-            for theme in themes:
-                categories_text += f"   - {theme}\n"
+        text += "\nMacro Risks for each L2 Category:\n"
+        for key, risks in categories['macro_risks'].items():
+            text += f"\n{key}. {categories['l2'][key]}:\n"
+            for risk in risks:
+                text += f"   - {risk}\n"
     
-    # Add PII categories if available
+    # Format PII categories
     if 'pii_protection_categories' in categories:
-        if categories_text:
-            categories_text += "\n\nPART 2: PII PROTECTION CATEGORIES\n\n"
-        else:
-            categories_text += "PII PROTECTION CATEGORIES\n\n"
-            
-        categories_text += "PII Protection Categories:\n"
+        text += "\n\nPART 2: PII PROTECTION CATEGORIES\n\n"
+        text += "PII Protection Categories:\n"
         for key, value in categories['pii_protection_categories'].items():
-            categories_text += f"{key}: {value}\n"
+            text += f"{key}: {value}\n"
         
         if 'pii_types' in categories:
-            categories_text += "\nCommon PII Types:\n"
+            text += "\nCommon PII Types:\n"
             for pii_type in categories['pii_types']:
-                categories_text += f"- {pii_type}\n"
+                text += f"- {pii_type}\n"
     
-    return categories_text
+    return text
 
 def analyze_text(model, tokenizer, unified: bool, categories: Dict, text: str) -> Dict:
     """
@@ -217,61 +219,54 @@ def detect_text_type(model, tokenizer, categories: Dict, text: str) -> str:
 
 def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
     """Analyze text as a security risk finding."""
-    import torch
-    import re
-    
-    # Format the categories
-    categories_text = format_all_categories_for_prompt(categories)
-    
-    # Create an enhanced prompt for risk analysis
-    messages = [
-        {
-            "role": "system",
-            "content": f"You are an expert cybersecurity risk analyst with extensive experience in categorizing security findings according to standardized risk frameworks. Your task is to analyze security risk findings and correctly identify both the macro risk category and specific risk themes.\n\nYou must use ONLY the standardized categories provided below.\n\n{categories_text}\n\nGuidelines for risk categorization:\n1. Each security finding belongs to exactly ONE macro risk category - select the most appropriate match\n2. Security findings often exhibit multiple risk themes within their macro category\n3. Macro categories represent broad areas of security concern, while thematic risks are specific vulnerabilities or weaknesses\n4. You must only select thematic risks that belong to the chosen macro risk category\n5. You must never invent new categories or themes\n6. IMPORTANT: The numbers assigned to each macro risk category (1, 2, 3, etc.) are just identifiers - focus on the text descriptions when determining the appropriate category\n\nContext: Security risk categorization is critical for organizations to standardize their approach to risk management, ensure comprehensive coverage across all risk domains, and enable consistent prioritization and remediation."
-        },
-        {
-            "role": "user",
-            "content": f"I need to analyze a security risk finding to identify the macro risk category and specific risk themes.\n\nSecurity Risk Finding:\n{text}\n\nPlease provide your analysis in a structured JSON format with:\n1. 'macro_risk': Select ONE macro risk category from the standardized list (include both the number and name)\n2. 'risk_themes': Provide an array of specific risk themes from the corresponding thematic risks list\n\nAnalyze the finding carefully to ensure accurate categorization. Focus on the description of the macro risk categories, not their numbers."
-        }
-    ]
-    
-    prompt = tokenizer.apply_chat_template(messages, tokenize=False)
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-    
-    # Generate the response
-    with torch.no_grad():
-        outputs = model.generate(
-            inputs["input_ids"],
-            max_new_tokens=512,
-            temperature=0.1,
-            top_p=0.9,
-            do_sample=True
-        )
-    
-    response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-    
-    # Try to parse JSON from the response
-    json_match = re.search(r'({.*?})', response.replace('\n', ' '), re.DOTALL)
-    if json_match:
+    try:
+        # Format the categories
+        categories_text = format_all_categories_for_prompt(categories)
+        
+        # Create an enhanced prompt for risk analysis
+        messages = [
+            {
+                "role": "system",
+                "content": f"You are an expert cybersecurity risk analyst with extensive experience in categorizing security findings according to standardized risk frameworks. Your task is to analyze security risk findings and correctly identify both the L2 category and specific macro risks.\n\nYou must use ONLY the standardized categories provided below.\n\n{categories_text}\n\nGuidelines for risk categorization:\n1. Each security finding belongs to exactly ONE L2 category - select the most appropriate match\n2. Security findings often exhibit multiple macro risks within their L2 category\n3. L2 categories represent broad areas of security concern, while macro risks are specific vulnerabilities or weaknesses\n4. You must only select macro risks that belong to the chosen L2 category\n5. You must never invent new categories or risks\n6. IMPORTANT: The numbers assigned to each L2 category (1, 2, 3, etc.) are just identifiers - focus on the text descriptions when determining the appropriate category\n\nContext: Security risk categorization is critical for organizations to standardize their approach to risk management, ensure comprehensive coverage across all risk domains, and enable consistent prioritization and remediation."
+            },
+            {
+                "role": "user",
+                "content": f"I need to analyze a security risk finding to identify the L2 category and specific macro risks.\n\nText to analyze:\n{text}\n\nIs this a security risk finding or text with potential PII?"
+            },
+            {
+                "role": "assistant",
+                "content": "This is a security risk finding."
+            },
+            {
+                "role": "user",
+                "content": "Please provide your risk analysis in a structured JSON format with:\n1. 'l2_category': Select ONE L2 category from the standardized list (include both the number and name)\n2. 'macro_risks': Provide an array of specific macro risks from the corresponding list\n\nAnalyze the finding carefully to ensure accurate categorization. Focus on the description of the L2 categories, not their numbers."
+            }
+        ]
+        
+        # Generate response
+        response = generate_response(model, tokenizer, messages)
+        
         try:
-            json_str = json_match.group(1)
-            result = json.loads(json_str)
+            # Parse the JSON response
+            result = json.loads(response)
             return {
-                "type": "risk",
                 "success": True,
-                "macro_risk": result.get("macro_risk", ""),
-                "risk_themes": result.get("risk_themes", []),
-                "raw_response": response
+                "type": "risk",
+                "l2_category": result.get("l2_category"),
+                "macro_risks": result.get("macro_risks", [])
             }
         except json.JSONDecodeError:
-            pass
-    
-    # If we couldn't parse JSON, return the raw response
-    return {
-        "type": "risk",
-        "success": False,
-        "raw_response": response
-    }
+            return {
+                "success": False,
+                "error": "Failed to parse model response as JSON",
+                "raw_response": response
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
     """Analyze text for PII and protection classification."""
@@ -407,8 +402,8 @@ def main():
         if result.get("type") == "risk":
             if result.get("success", False):
                 print(f"Type: Security Risk")
-                print(f"Macro Risk: {result.get('macro_risk', 'Not identified')}")
-                print(f"Risk Themes: {', '.join(result.get('risk_themes', ['None']))}")
+                print(f"L2 Category: {result.get('l2_category', 'Not identified')}")
+                print(f"Macro Risks: {', '.join(result.get('macro_risks', ['None']))}")
             else:
                 print("Failed to analyze as security risk")
                 print(f"Raw response: {result.get('raw_response', '')}")
