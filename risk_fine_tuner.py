@@ -349,67 +349,75 @@ def load_json_training_data(file_path: str) -> List[Dict[str, Any]]:
 
 def format_risk_example(example, categories):
     """Format a risk categorization example for fine-tuning."""
-    text = example["text"]
-    macro_risk = example["macro_risk"]
-    risk_themes = example["risk_themes"]
-    
-    # Format for fine-tuning in Llama chat format with enhanced prompting
-    return {
-        "messages": [
-            {
-                "role": "system",
-                "content": f"You are an expert cybersecurity risk analyst with extensive experience in categorizing security findings according to standardized risk frameworks. Your task is to analyze security risk findings and correctly identify both the macro risk category and specific risk themes.\n\nYou must use ONLY the standardized categories provided below.\n\n{categories}\n\nGuidelines for risk categorization:\n1. Each security finding belongs to exactly ONE macro risk category - select the most appropriate match\n2. Security findings often exhibit multiple risk themes within their macro category\n3. Macro categories represent broad areas of security concern, while thematic risks are specific vulnerabilities or weaknesses\n4. You must only select thematic risks that belong to the chosen macro risk category\n5. You must never invent new categories or themes\n6. IMPORTANT: The numbers assigned to each macro risk category (1, 2, 3, etc.) are just identifiers - focus on the text descriptions when determining the appropriate category\n\nContext: Security risk categorization is critical for organizations to standardize their approach to risk management, ensure comprehensive coverage across all risk domains, and enable consistent prioritization and remediation."
-            },
-            {
-                "role": "user",
-                "content": f"I need to analyze a security risk finding to identify the macro risk category and specific risk themes.\n\nText to analyze:\n{text}\n\nIs this a security risk finding or text with potential PII?"
-            },
-            {
-                "role": "assistant",
-                "content": "This is a security risk finding."
-            },
-            {
-                "role": "user",
-                "content": "Please provide your risk analysis in a structured JSON format with:\n1. 'macro_risk': Select ONE macro risk category from the standardized list (include both the number and name)\n2. 'risk_themes': Provide an array of specific risk themes from the corresponding thematic risks list\n\nAnalyze the finding carefully to ensure accurate categorization. Focus on the description of the macro risk categories, not their numbers."
-            },
-            {
-                "role": "assistant",
-                "content": f"{{\n  \"macro_risk\": \"{macro_risk}\",\n  \"risk_themes\": {json.dumps(risk_themes, indent=2)}\n}}"
-            }
-        ]
-    }
+    try:
+        text = example["text"]
+        macro_risk = example["macro_risk"]
+        risk_themes = example["risk_themes"]
+        
+        # Format for fine-tuning in Llama chat format with enhanced prompting
+        return {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": f"You are an expert cybersecurity risk analyst with extensive experience in categorizing security findings according to standardized risk frameworks. Your task is to analyze security risk findings and correctly identify both the macro risk category and specific risk themes.\n\nYou must use ONLY the standardized categories provided below.\n\n{categories}\n\nGuidelines for risk categorization:\n1. Each security finding belongs to exactly ONE macro risk category - select the most appropriate match\n2. Security findings often exhibit multiple risk themes within their macro category\n3. Macro categories represent broad areas of security concern, while thematic risks are specific vulnerabilities or weaknesses\n4. You must only select thematic risks that belong to the chosen macro risk category\n5. You must never invent new categories or themes\n6. IMPORTANT: The numbers assigned to each macro risk category (1, 2, 3, etc.) are just identifiers - focus on the text descriptions when determining the appropriate category\n\nContext: Security risk categorization is critical for organizations to standardize their approach to risk management, ensure comprehensive coverage across all risk domains, and enable consistent prioritization and remediation."
+                },
+                {
+                    "role": "user",
+                    "content": f"I need to analyze a security risk finding to identify the macro risk category and specific risk themes.\n\nText to analyze:\n{text}\n\nIs this a security risk finding or text with potential PII?"
+                },
+                {
+                    "role": "assistant",
+                    "content": "This is a security risk finding."
+                },
+                {
+                    "role": "user",
+                    "content": "Please provide your risk analysis in a structured JSON format with:\n1. 'macro_risk': Select ONE macro risk category from the standardized list (include both the number and name)\n2. 'risk_themes': Provide an array of specific risk themes from the corresponding thematic risks list\n\nAnalyze the finding carefully to ensure accurate categorization. Focus on the description of the macro risk categories, not their numbers."
+                },
+                {
+                    "role": "assistant",
+                    "content": f"{{\n  \"macro_risk\": \"{macro_risk}\",\n  \"risk_themes\": {json.dumps(risk_themes, indent=2)}\n}}"
+                }
+            ]
+        }
+    except Exception as e:
+        print(f"Error formatting risk example: {str(e)}")
+        return None
 
 def format_pii_example(example, categories):
     """Format a PII classification example for fine-tuning."""
-    text = example["text"]
-    pc_category = example["pc_category"]
-    pii_types = example["pii_types"]
-    
-    # Format for fine-tuning in Llama chat format with enhanced prompting
-    return {
-        "messages": [
-            {
-                "role": "system",
-                "content": f"You are a specialized data privacy expert with deep knowledge of personally identifiable information (PII) detection and classification. Your expertise helps organizations properly handle sensitive data in compliance with regulations like GDPR, CCPA, and HIPAA.\n\nYou must use ONLY the standardized categories provided below.\n\n{categories}\n\nGuidelines for PII classification:\n\n1. PC0 (Public) - Information with no confidentiality requirements that can be freely shared\n   • Examples: Public documentation, marketing materials, open data\n   • Contains no personally identifiable information\n   • May include general business information that is already publicly available\n\n2. PC1 (Internal) - Information with basic confidentiality requirements\n   • Examples: Names, business contact details, customer IDs, general business data\n   • Contains limited personal identifiers but no sensitive personal data\n   • Requires basic protection but would cause minimal harm if disclosed\n\n3. PC3 (Confidential) - Information with high protection requirements\n   • Examples: SSNs, financial data, health information, credentials, biometrics\n   • Contains sensitive personal data requiring strict protection\n   • Would cause significant harm to individuals if improperly disclosed\n\nYour task is to analyze text, identify if it contains PII, classify it into the correct protection category, and list the specific types of PII found."
-            },
-            {
-                "role": "user",
-                "content": f"Please analyze the following text to identify any PII and classify it according to the protection categories.\n\nText to analyze:\n{text}\n\nIs this a security risk finding or text with potential PII?"
-            },
-            {
-                "role": "assistant",
-                "content": "This is text with potential PII."
-            },
-            {
-                "role": "user",
-                "content": "Please provide your PII analysis in a structured JSON format with:\n1. 'pc_category': Select ONE protection category (PC0, PC1, or PC3) based on the sensitivity of any PII present\n2. 'pii_types': Provide an array of specific PII types found (if any)\n\nAnalyze the text carefully to ensure accurate classification."
-            },
-            {
-                "role": "assistant",
-                "content": f"{{\n  \"pc_category\": \"{pc_category}\",\n  \"pii_types\": {json.dumps(pii_types, indent=2)}\n}}"
-            }
-        ]
-    }
+    try:
+        text = example["text"]
+        pc_category = example["pc_category"]
+        pii_types = example["pii_types"]
+        
+        # Format for fine-tuning in Llama chat format with enhanced prompting
+        return {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": f"You are a specialized data privacy expert with deep knowledge of personally identifiable information (PII) detection and classification. Your expertise helps organizations properly handle sensitive data in compliance with regulations like GDPR, CCPA, and HIPAA.\n\nYou must use ONLY the standardized categories provided below.\n\n{categories}\n\nGuidelines for PII classification:\n\n1. PC0 (Public) - Information with no confidentiality requirements that can be freely shared\n   • Examples: Public documentation, marketing materials, open data\n   • Contains no personally identifiable information\n   • May include general business information that is already publicly available\n\n2. PC1 (Internal) - Information with basic confidentiality requirements\n   • Examples: Names, business contact details, customer IDs, general business data\n   • Contains limited personal identifiers but no sensitive personal data\n   • Requires basic protection but would cause minimal harm if disclosed\n\n3. PC3 (Confidential) - Information with high protection requirements\n   • Examples: SSNs, financial data, health information, credentials, biometrics\n   • Contains sensitive personal data requiring strict protection\n   • Would cause significant harm to individuals if improperly disclosed\n\nYour task is to analyze text, identify if it contains PII, classify it into the correct protection category, and list the specific types of PII found."
+                },
+                {
+                    "role": "user",
+                    "content": f"Please analyze the following text to identify any PII and classify it according to the protection categories.\n\nText to analyze:\n{text}\n\nIs this a security risk finding or text with potential PII?"
+                },
+                {
+                    "role": "assistant",
+                    "content": "This is text with potential PII."
+                },
+                {
+                    "role": "user",
+                    "content": "Please provide your PII analysis in a structured JSON format with:\n1. 'pc_category': Select ONE protection category (PC0, PC1, or PC3) based on the sensitivity of any PII present\n2. 'pii_types': Provide an array of specific PII types found (if any)\n\nAnalyze the text carefully to ensure accurate classification."
+                },
+                {
+                    "role": "assistant",
+                    "content": f"{{\n  \"pc_category\": \"{pc_category}\",\n  \"pii_types\": {json.dumps(pii_types, indent=2)}\n}}"
+                }
+            ]
+        }
+    except Exception as e:
+        print(f"Error formatting PII example: {str(e)}")
+        return None
 
 def process_batch(examples: List[Dict[str, Any]], file_handle) -> None:
     """
@@ -419,20 +427,28 @@ def process_batch(examples: List[Dict[str, Any]], file_handle) -> None:
         examples: List of training examples
         file_handle: File handle to write to
     """
-    categories = format_all_categories_for_prompt()
-    
-    for example in tqdm(examples, desc="Formatting examples"):
-        example_type = example.get("type", "unknown")
+    try:
+        categories = format_all_categories_for_prompt()
         
-        if example_type == "risk":
-            formatted_example = format_risk_example(example, categories)
-        elif example_type == "pii":
-            formatted_example = format_pii_example(example, categories)
-        else:
-            print(f"Warning: Unknown example type: {example_type}")
-            continue
-        
-        file_handle.write(json.dumps(formatted_example) + '\n')
+        for example in tqdm(examples, desc="Formatting examples"):
+            try:
+                example_type = example.get("type", "unknown")
+                
+                if example_type == "risk":
+                    formatted_example = format_risk_example(example, categories)
+                elif example_type == "pii":
+                    formatted_example = format_pii_example(example, categories)
+                else:
+                    print(f"Warning: Unknown example type: {example_type}")
+                    continue
+                
+                file_handle.write(json.dumps(formatted_example) + '\n')
+            except Exception as e:
+                print(f"Error processing example: {str(e)}")
+                continue
+    except Exception as e:
+        print(f"Error in batch processing: {str(e)}")
+        traceback.print_exc()
 
 def cleanup_memory():
     """Clean up memory to prevent leaks."""
