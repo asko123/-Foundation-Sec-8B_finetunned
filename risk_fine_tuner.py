@@ -516,6 +516,17 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
             if tokenizer.pad_token is None:
                 tokenizer.pad_token = tokenizer.eos_token
             
+            # Set up chat template
+            tokenizer.chat_template = '''{% for message in messages %}
+{% if message['role'] == 'system' %}{% if not loop.first %}{{ '\n' }}{% endif %}{{ message['content'] }}
+{% elif message['role'] == 'user' %}
+User: {{ message['content'] }}
+{% elif message['role'] == 'assistant' %}
+Assistant: {{ message['content'] }}
+{% endif %}
+{% endfor %}
+Assistant: '''
+
             # Configure LoRA for parameter-efficient fine-tuning
             lora_config = LoraConfig(
                 r=16,
@@ -542,34 +553,19 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
             
             print(f"Training for {num_epochs} epochs with {total_steps} total steps")
             
-            # Set up training arguments
-            training_args = TrainingArguments(
-                output_dir=os.path.join(output_dir, "checkpoints"),
-                overwrite_output_dir=True,
-                num_train_epochs=num_epochs,
-                per_device_train_batch_size=bs,
-                per_device_eval_batch_size=bs,
-                gradient_accumulation_steps=ga_steps,
-                learning_rate=2e-5,
-                weight_decay=0.01,
-                warmup_ratio=0.03,
-                logging_steps=10,
-                eval_steps=eval_steps,
-                save_steps=save_steps,
-                eval_strategy="steps",
-                save_strategy="steps",
-                load_best_model_at_end=True,
-                fp16=True if device == "cuda" else False,
-                report_to="none",
-                save_total_limit=3,
-                logging_first_step=True,
-                dataloader_num_workers=4 if device == "cuda" else 0,
-                dataloader_drop_last=True
-            )
-            
             # Prepare data formatting function
             def format_chat(example):
-                return {"input_ids": tokenizer.encode(tokenizer.apply_chat_template(example["messages"], tokenize=False))}
+                if isinstance(example["messages"], list):
+                    formatted_text = ""
+                    for msg in example["messages"]:
+                        if msg["role"] == "system":
+                            formatted_text += f"{msg['content']}\n"
+                        elif msg["role"] == "user":
+                            formatted_text += f"User: {msg['content']}\n"
+                        elif msg["role"] == "assistant":
+                            formatted_text += f"Assistant: {msg['content']}\n"
+                    return {"input_ids": tokenizer.encode(formatted_text + "Assistant: ", add_special_tokens=True)}
+                return {"input_ids": tokenizer.encode(str(example["messages"]), add_special_tokens=True)}
             
             print("Processing training dataset...")
             train_dataset = train_dataset.map(format_chat, remove_columns=["messages"])
@@ -580,7 +576,29 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
             # Initialize trainer
             trainer = Trainer(
                 model=model,
-                args=training_args,
+                args=TrainingArguments(
+                    output_dir=os.path.join(output_dir, "checkpoints"),
+                    overwrite_output_dir=True,
+                    num_train_epochs=num_epochs,
+                    per_device_train_batch_size=bs,
+                    per_device_eval_batch_size=bs,
+                    gradient_accumulation_steps=ga_steps,
+                    learning_rate=2e-5,
+                    weight_decay=0.01,
+                    warmup_ratio=0.03,
+                    logging_steps=10,
+                    eval_steps=eval_steps,
+                    save_steps=save_steps,
+                    eval_strategy="steps",
+                    save_strategy="steps",
+                    load_best_model_at_end=True,
+                    fp16=True if device == "cuda" else False,
+                    report_to="none",
+                    save_total_limit=3,
+                    logging_first_step=True,
+                    dataloader_num_workers=4 if device == "cuda" else 0,
+                    dataloader_drop_last=True
+                ),
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
                 data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
