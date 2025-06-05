@@ -13,6 +13,7 @@ Key Features:
 5. Training example generation from inferred categories
 """
 
+# Standard library imports
 import os
 import json
 import csv
@@ -25,38 +26,17 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 from tqdm import tqdm
 import pandas as pd
 
-# Import constants from main file
-from risk_fine_tuner import (
+# Import constants
+from risk_fine_tuner_constants import (
     L2,
     MACRO_RISKS,
     PII_PROTECTION_CATEGORIES,
     PII_TYPES,
     PRIVACY_CLASSIFICATIONS,
-    SENSITIVITY_LEVELS
+    SENSITIVITY_LEVELS,
+    RISK_KEYWORDS,
+    PII_KEYWORDS
 )
-
-# Keywords for risk category identification
-RISK_KEYWORDS = {
-    "1": ["policy", "standard", "governance", "framework", "control", "baseline", "training", "awareness", "maturity", "monitoring", "testing", "kci", "kri", "exception", "tolerance", "issue management"],
-    "2": ["development", "acquire", "software", "change", "requirement", "implementation", "dependency", "m&a", "sdlc", "deployment"],
-    "3": ["inventory", "asset", "classification", "end of life", "destruction", "hardware", "media", "disposal"],
-    "4": ["data identification", "lineage", "data classification", "data governance", "data quality", "metadata"],
-    "5": ["encryption", "data loss", "dlp", "logging", "third party", "removable media", "data protection", "at rest", "in transit"],
-    "6": ["authentication", "authorization", "privilege", "access", "identity", "joiner", "mover", "leaver", "segregation", "duties", "secrets", "production"],
-    "7": ["configuration", "network", "segmentation", "cloud", "data center", "infrastructure"],
-    "8": ["vulnerability", "patching", "scanning", "assessment", "s-sdlc", "security testing"],
-    "9": ["capacity", "planning", "slo", "availability", "performance", "latency", "monitoring"],
-    "10": ["incident", "identification", "classification", "escalation", "trend", "technical"],
-    "11": ["security incident", "incident response", "monitoring", "handling", "audit", "post mortem", "threat intelligence"],
-    "12": ["resilience", "continuity", "disaster", "recovery", "cyber resilience", "operational"]
-}
-
-# Keywords for PII identification
-PII_KEYWORDS = {
-    "PC0": ["public", "marketing", "documentation", "open data", "website", "brochure"],
-    "PC1": ["name", "contact", "business email", "job title", "company", "department", "customer id"],
-    "PC3": ["ssn", "social security", "financial", "bank", "credit card", "health", "medical", "password", "credential", "biometric", "national id", "driver license", "passport"]
-}
 
 def scan_folder_for_files(folder_path: str) -> List[str]:
     """Scan folder for Excel and CSV files."""
