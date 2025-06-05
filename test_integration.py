@@ -49,15 +49,27 @@ def create_test_data():
 def run_fine_tuning(data_file):
     """Run the fine-tuning process."""
     print("\n=== Running Fine-Tuning ===")
-    cmd = f"python risk_fine_tuner.py --training-data {data_file} --output test_output"
-    print(f"Command: {cmd}")
     
-    # Note: This would actually run the fine-tuning
-    # For now, we'll just show what would be run
-    print("(Fine-tuning would start here)")
-    
-    # The fine-tuner creates: test_output/unified_model_with_categories.pkl
-    return "test_output/unified_model_with_categories.pkl"
+    try:
+        from risk_fine_tuner import fine_tune_model
+        
+        # Run the actual fine-tuning
+        print(f"Starting fine-tuning with data file: {data_file}")
+        model_path = fine_tune_model(data_file, "test_output")
+        
+        if not model_path:
+            print("❌ Fine-tuning failed!")
+            return None
+            
+        print(f"✅ Fine-tuning completed successfully!")
+        print(f"Model saved to: {model_path}")
+        return model_path
+        
+    except Exception as e:
+        print(f"❌ Error during fine-tuning: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 def test_inference(pickle_path):
     """Test the inference with the pickle file."""

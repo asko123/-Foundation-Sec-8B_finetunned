@@ -25,6 +25,7 @@ import re
 from typing import List, Dict, Any, Optional, Tuple, Union
 from tqdm import tqdm
 import pandas as pd
+from Levenshtein import ratio  # For better string matching
 
 # Import constants
 from risk_fine_tuner_constants import (
@@ -52,7 +53,7 @@ def scan_folder_for_files(folder_path: str) -> List[str]:
 
 def analyze_content_for_risk_category(text: str) -> Tuple[str, List[str], float]:
     """
-    Analyze text content to identify L2 category and macro risks.
+    Analyze text content to identify L2 category and macro risks using improved matching.
     
     Args:
         text: Text content to analyze
@@ -67,24 +68,78 @@ def analyze_content_for_risk_category(text: str) -> Tuple[str, List[str], float]
     best_l2_score = 0
     identified_risks = set()
     
-    # Check each L2 category
-    for key, value in L2.items():
-        value_lower = value.lower()
-        # Calculate similarity score (simple word overlap for now)
-        words = set(value_lower.split()) & set(text_lower.split())
-        score = len(words) / len(value_lower.split())
+    # Function to find best match using Levenshtein distance
+    def find_best_match(text: str, candidates: Dict[str, str], threshold: float = 0.85) -> Tuple[Optional[str], float]:
+        best_match = None
+        best_score = 0
+        text_lower = text.lower()
         
-        if score > best_l2_score:
-            best_l2_score = score
-            best_l2 = f"{key}. {value}"
+        for key, value in candidates.items():
+            value_lower = value.lower()
+            
+            # Try exact match first
+            if text_lower == value_lower:
+                return f"{key}. {value}", 1.0
+            
+            # Try contains match
+            if text_lower in value_lower or value_lower in text_lower:
+                score = 0.9  # High score for contains match
+            else:
+                # Use Levenshtein distance for fuzzy match
+                score = ratio(text_lower, value_lower)
+            
+            if score > best_score and score >= threshold:
+                best_score = score
+                best_match = f"{key}. {value}"
+        
+        return best_match, best_score
     
-    # Check for macro risks within the identified L2 category
+    # Find best L2 category match
+    best_l2, best_l2_score = find_best_match(text, L2)
+    
+    # If we found an L2 category, look for associated macro risks
     if best_l2:
         l2_key = best_l2.split('.')[0]
+        
+        # Function to find best risk match
+        def find_best_risk_match(text: str, risks: List[str], threshold: float = 0.85) -> Optional[str]:
+            best_match = None
+            best_score = 0
+            text_lower = text.lower()
+            
+            for risk in risks:
+                risk_lower = risk.lower()
+                
+                # Try exact match first
+                if text_lower == risk_lower:
+                    return risk
+                
+                # Try contains match
+                if text_lower in risk_lower or risk_lower in text_lower:
+                    score = 0.9  # High score for contains match
+                else:
+                    # Use Levenshtein distance for fuzzy match
+                    score = ratio(text_lower, risk_lower)
+                
+                if score > best_score and score >= threshold:
+                    best_score = score
+                    best_match = risk
+            
+            return best_match
+        
+        # Look for risk keywords in text
+        words = set(text_lower.split())
         for risk in MACRO_RISKS.get(l2_key, []):
             risk_lower = risk.lower()
-            if any(word in text_lower for word in risk_lower.split()):
-                identified_risks.add(risk)
+            risk_words = set(risk_lower.split())
+            
+            # If any risk keyword is found, try to match the full risk
+            if risk_words & words:
+                # Try to find the best matching risk from the L2 category's risks
+                matched_risk = find_best_risk_match(risk, MACRO_RISKS[l2_key])
+                if matched_risk:
+                    identified_risks.add(matched_risk)
+                    print(f"Matched risk: '{risk}' -> '{matched_risk}'")
     
     return best_l2, list(identified_risks), best_l2_score
 
@@ -632,6 +687,163 @@ def extract_text_from_csv(file_path: str) -> List[Dict[str, Any]]:
         traceback.print_exc()
         return []
 
+def process_privacy_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
+    """
+    Process raw privacy/PII data into training examples.
+    
+    Expected columns:
+    - COLUMNNAME: Name of the database column
+    - PRIVACYTYPE: Type of privacy data
+    - PRIVACYTYPENAME: Name of the privacy type
+    - PRIVACYTYPECLASSIFICATION: Privacy classification level
+    - ENTITYNAME: (Optional) Name of the entity
+    - ENTITYDESC: (Optional) Description of the entity
+    - PRIVACYTYPEDESCRIPTION: (Optional) Description of the privacy type
+    """
+    training_examples = []
+    
+    try:
+        # Clean column names
+        raw_data.columns = [str(col).strip().upper() for col in raw_data.columns]
+        required_columns = {'COLUMNNAME', 'PRIVACYTYPE'}
+        if not all(col in raw_data.columns for col in required_columns):
+            missing = required_columns - set(raw_data.columns)
+            print(f"Warning: Missing required columns for privacy data: {missing}")
+            return []
+        
+        # Get list of additional columns for metadata
+        metadata_columns = [col for col in raw_data.columns if col not in required_columns]
+        print(f"Found additional columns that will be preserved in metadata: {metadata_columns}")
+        
+        for _, row in raw_data.iterrows():
+            try:
+                # Build text description
+                text_parts = []
+                text_parts.append(f"Database Column: {row['COLUMNNAME']}")
+                
+                if pd.notna(row.get('ENTITYNAME')):
+                    text_parts.append(f"Entity: {row['ENTITYNAME']}")
+                if pd.notna(row.get('ENTITYDESC')):
+                    text_parts.append(f"Description: {row['ENTITYDESC']}")
+                if pd.notna(row.get('PRIVACYTYPEDESCRIPTION')):
+                    text_parts.append(f"Privacy Description: {row['PRIVACYTYPEDESCRIPTION']}")
+                
+                text = "\n".join(text_parts)
+                
+                # Determine privacy classification
+                pc_category = "PC1"  # Default to PC1
+                if pd.notna(row.get('PRIVACYTYPECLASSIFICATION')):
+                    classification = str(row['PRIVACYTYPECLASSIFICATION']).upper()
+                    if any(term in classification for term in ["PUBLIC", "DP10", "UNRESTRICTED"]):
+                        pc_category = "PC0"
+                    elif any(term in classification for term in ["CONFIDENTIAL", "DP30", "HIGHLY RESTRICTED", "SENSITIVE"]):
+                        pc_category = "PC3"
+                
+                # Identify PII types using improved matching
+                pii_types = set()
+                privacy_type = str(row['PRIVACYTYPE']).strip()
+                privacy_name = str(row.get('PRIVACYTYPENAME', '')).strip()
+                
+                # Function to find best match using Levenshtein distance
+                def find_best_match(text: str, candidates: List[str], threshold: float = 0.85) -> Optional[str]:
+                    best_match = None
+                    best_score = 0
+                    text_lower = text.lower()
+                    
+                    for candidate in candidates:
+                        # Try exact match first
+                        if text_lower == candidate.lower():
+                            return candidate
+                        
+                        # Try contains match
+                        if text_lower in candidate.lower() or candidate.lower() in text_lower:
+                            score = 0.9  # High score for contains match
+                        else:
+                            # Use Levenshtein distance for fuzzy match
+                            score = ratio(text_lower, candidate.lower())
+                        
+                        if score > best_score and score >= threshold:
+                            best_score = score
+                            best_match = candidate
+                    
+                    return best_match
+                
+                # Try to match privacy type and name against PII types
+                for text in [privacy_type, privacy_name]:
+                    if pd.notna(text):
+                        match = find_best_match(text, PII_TYPES)
+                        if match:
+                            pii_types.add(match)
+                            print(f"Matched PII type: '{text}' -> '{match}'")
+                
+                # Also check the description for additional PII types
+                if pd.notna(row.get('PRIVACYTYPEDESCRIPTION')):
+                    desc = str(row['PRIVACYTYPEDESCRIPTION'])
+                    for pii_type in PII_TYPES:
+                        if pii_type.lower() in desc.lower():
+                            pii_types.add(pii_type)
+                
+                # If no PII types found through matching, analyze the text
+                if not pii_types:
+                    _, detected_types, _ = analyze_content_for_pii(text)
+                    pii_types.update(detected_types)
+                
+                # Create example if we have valid PII types
+                if pii_types:
+                    example = {
+                        "type": "pii",
+                        "text": text,
+                        "pc_category": pc_category,
+                        "pii_types": list(pii_types),
+                        "metadata": {
+                            "source": "raw_data",
+                            "original_type": privacy_type,
+                            "original_name": privacy_name if pd.notna(row.get('PRIVACYTYPENAME')) else None,
+                            "original_classification": row.get('PRIVACYTYPECLASSIFICATION') if pd.notna(row.get('PRIVACYTYPECLASSIFICATION')) else None
+                        }
+                    }
+                    
+                    # Add additional metadata
+                    for col in metadata_columns:
+                        if pd.notna(row.get(col)):
+                            example["metadata"][col.lower()] = row[col]
+                    
+                    training_examples.append(example)
+                else:
+                    print(f"Warning: No PII types identified for column '{row['COLUMNNAME']}'")
+            
+            except Exception as e:
+                print(f"Error processing privacy row: {str(e)}")
+                continue
+        
+        # Print summary
+        print(f"\nProcessed {len(raw_data)} privacy entries:")
+        print(f"- Successfully mapped: {len(training_examples)}")
+        print(f"- Skipped: {len(raw_data) - len(training_examples)}")
+        
+        if training_examples:
+            # Print mapping statistics
+            pii_stats = {}
+            pc_stats = {}
+            for ex in training_examples:
+                pc_stats[ex['pc_category']] = pc_stats.get(ex['pc_category'], 0) + 1
+                for pii_type in ex['pii_types']:
+                    pii_stats[pii_type] = pii_stats.get(pii_type, 0) + 1
+            
+            print("\nPrivacy Classification Distribution:")
+            for pc, count in sorted(pc_stats.items()):
+                print(f"  {pc}: {count} entries")
+            
+            print("\nTop PII Types:")
+            for pii_type, count in sorted(pii_stats.items(), key=lambda x: x[1], reverse=True)[:10]:
+                print(f"  {pii_type}: {count} occurrences")
+    
+    except Exception as e:
+        print(f"Error processing privacy data: {str(e)}")
+        traceback.print_exc()
+    
+    return training_examples
+
 def main():
     """Main function to demonstrate the enhanced functionality."""
     import argparse
@@ -650,14 +862,26 @@ def main():
         
         print(f"\n=== TRAINING DATA READY ===")
         print(f"Training data saved to: {training_file}")
-        print(f"You can now proceed with fine-tuning using this data.")
         
-        # Note: The actual fine-tuning code would continue here...
-        # For now, we'll just show the data extraction capability
+        # Import fine-tuning function from risk_fine_tuner
+        from risk_fine_tuner import fine_tune_model
+        
+        # Start fine-tuning process
+        print("\n=== STARTING FINE-TUNING ===")
+        result = fine_tune_model(training_file, args.output)
+        
+        if result:
+            print(f"\n✅ Fine-tuning completed successfully!")
+            print(f"Model saved to: {result}")
+            return 0
+        else:
+            print(f"\n❌ Fine-tuning failed!")
+            return 1
         
     except Exception as e:
         print(f"Error: {e}")
         traceback.print_exc()
+        return 1
 
 if __name__ == "__main__":
     main() 

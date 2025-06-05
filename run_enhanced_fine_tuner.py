@@ -40,6 +40,9 @@ Examples:
     
     # Process with custom confidence threshold
     python run_enhanced_fine_tuner.py --folder ./data_files --confidence 0.2
+    
+    # Process and immediately start fine-tuning
+    python run_enhanced_fine_tuner.py --folder ./data_files --run-fine-tuning
         """
     )
     
@@ -62,6 +65,12 @@ Examples:
         help="Minimum confidence threshold for including examples (default: 0.1)"
     )
     
+    parser.add_argument(
+        "--run-fine-tuning",
+        action="store_true",
+        help="Start fine-tuning immediately after data processing"
+    )
+    
     args = parser.parse_args()
     
     try:
@@ -71,6 +80,7 @@ Examples:
         print(f"📁 Input folder: {args.folder}")
         print(f"📄 Output directory: {args.output}")
         print(f"🎯 Confidence threshold: {args.confidence}")
+        print(f"🔄 Auto-start fine-tuning: {'Yes' if args.run_fine_tuning else 'No'}")
         print()
         
         # Check if input folder exists
@@ -92,14 +102,9 @@ Examples:
         print(f"📋 Training data file: {training_file}")
         print(f"📊 Summary report: {os.path.join(args.output, 'extraction_summary.json')}")
         print()
-        print("🎯 NEXT STEPS:")
-        print("1. Review the extracted training examples")
-        print("2. Run fine-tuning with the generated data:")
-        print(f"   python risk_fine_tuner.py --training-data {training_file}")
-        print()
-        print("📁 Generated files:")
         
         # List generated files
+        print("📁 Generated files:")
         output_files = []
         for file in os.listdir(args.output):
             file_path = os.path.join(args.output, file)
@@ -109,6 +114,25 @@ Examples:
         
         for file_info in output_files:
             print(file_info)
+        
+        if args.run_fine_tuning:
+            print("\n🚀 Starting fine-tuning process...")
+            from risk_fine_tuner import fine_tune_model
+            
+            fine_tuning_output = os.path.join(args.output, "fine_tuned_model")
+            result = fine_tune_model(training_file, fine_tuning_output)
+            
+            if result:
+                print(f"\n✅ Fine-tuning completed successfully!")
+                print(f"📁 Model saved to: {result}")
+            else:
+                print(f"\n❌ Fine-tuning failed!")
+                return 1
+        else:
+            print("\n🎯 NEXT STEPS:")
+            print("1. Review the extracted training examples")
+            print("2. Run fine-tuning with the generated data:")
+            print(f"   python risk_fine_tuner.py --training-data {training_file}")
         
         return 0
         
