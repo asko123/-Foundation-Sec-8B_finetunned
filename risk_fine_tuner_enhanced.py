@@ -448,164 +448,244 @@ def load_training_file(file_path: str) -> List[Dict[str, Any]]:
 
 def process_findings_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
     """
-    Process raw findings data into training examples.
+    Process raw findings data into training examples with improved matching.
     
     Key columns:
     - Finding_Title: Title of the finding
     - Finding_Description: Detailed description of the finding
     - L2: L2 category (maps to our L2 categories)
     - macro_risks: List of macro risks (maps to our MACRO_RISKS)
-    
-    Additional columns will be preserved in metadata.
     """
     training_examples = []
+    skipped_reasons = {
+        'no_l2': 0,
+        'no_risks': 0,
+        'empty_data': 0,
+        'error': 0
+    }
     
     try:
-        # Clean column names
+        # Clean column names and handle variations
         raw_data.columns = [str(col).strip().upper() for col in raw_data.columns]
+        column_mapping = {
+            'FINDING_TITLE': ['FINDING_TITLE', 'TITLE', 'FINDING NAME', 'NAME', 'FINDING'],
+            'FINDING_DESCRIPTION': ['FINDING_DESCRIPTION', 'DESCRIPTION', 'DESC', 'DETAILS', 'FINDING DETAILS'],
+            'L2': ['L2', 'L2_CATEGORY', 'CATEGORY', 'RISK_CATEGORY', 'FINDING_CATEGORY'],
+            'MACRO_RISKS': ['MACRO_RISKS', 'RISKS', 'RISK_TYPES', 'RISK_CATEGORIES', 'MACRO_RISK']
+        }
+        
+        # Map columns to standard names
+        for standard_col, variations in column_mapping.items():
+            if standard_col not in raw_data.columns:
+                for var in variations:
+                    if var in raw_data.columns:
+                        raw_data = raw_data.rename(columns={var: standard_col})
+                        print(f"Mapped column '{var}' to '{standard_col}'")
+                        break
+        
         required_columns = {'FINDING_TITLE', 'FINDING_DESCRIPTION', 'L2', 'MACRO_RISKS'}
         if not all(col in raw_data.columns for col in required_columns):
             missing = required_columns - set(raw_data.columns)
             print(f"Warning: Missing required columns: {missing}")
+            print(f"Available columns: {', '.join(raw_data.columns)}")
             return []
         
         # Get list of additional columns for metadata
         metadata_columns = [col for col in raw_data.columns if col not in required_columns]
         print(f"Found additional columns that will be preserved in metadata: {metadata_columns}")
         
-        for _, row in raw_data.iterrows():
+        # Pre-process L2 categories for better matching
+        l2_variations = {}
+        for key, value in L2.items():
+            l2_variations[value.lower()] = (key, value)
+            # Add variations without special characters
+            clean_value = re.sub(r'[^\w\s]', '', value.lower())
+            l2_variations[clean_value] = (key, value)
+            # Add abbreviated versions
+            words = value.split()
+            if len(words) > 1:
+                abbrev = ''.join(word[0] for word in words).lower()
+                l2_variations[abbrev] = (key, value)
+        
+        total_rows = len(raw_data)
+        print(f"\nProcessing {total_rows} findings...")
+        
+        for idx, row in raw_data.iterrows():
             try:
-                # Create context from title and description
-                context = f"Finding: {row['FINDING_TITLE']}\n\n"
-                if pd.notna(row['FINDING_DESCRIPTION']):
-                    context += f"Description: {row['FINDING_DESCRIPTION']}"
+                if idx % 1000 == 0:
+                    print(f"Progress: {idx}/{total_rows} rows processed")
                 
-                # Parse L2 category
+                # Skip if both title and description are empty
+                if pd.isna(row['FINDING_TITLE']) and pd.isna(row['FINDING_DESCRIPTION']):
+                    skipped_reasons['empty_data'] += 1
+                    continue
+                
+                # Create context from title and description
+                context_parts = []
+                if pd.notna(row['FINDING_TITLE']):
+                    context_parts.append(f"Finding: {row['FINDING_TITLE']}")
+                if pd.notna(row['FINDING_DESCRIPTION']):
+                    context_parts.append(f"Description: {row['FINDING_DESCRIPTION']}")
+                context = "\n\n".join(context_parts)
+                
+                # Parse L2 category with improved matching
                 l2_category = None
                 if pd.notna(row['L2']):
-                    l2_value = str(row['L2']).strip()
-                    # First try exact match
-                    for key, value in L2.items():
-                        if l2_value == value:
-                            l2_category = f"{key}. {value}"
-                            break
+                    l2_value = str(row['L2']).strip().lower()
+                    clean_l2_value = re.sub(r'[^\w\s]', '', l2_value)
                     
-                    # If no exact match, try fuzzy match
-                    if not l2_category:
-                        for key, value in L2.items():
-                            if l2_value.lower() in value.lower() or value.lower() in l2_value.lower():
-                                l2_category = f"{key}. {value}"
-                                print(f"Fuzzy matched L2 category: '{l2_value}' -> '{value}'")
-                                break
+                    # Try exact matches first
+                    if l2_value in l2_variations:
+                        key, value = l2_variations[l2_value]
+                        l2_category = f"{key}. {value}"
+                    elif clean_l2_value in l2_variations:
+                        key, value = l2_variations[clean_l2_value]
+                        l2_category = f"{key}. {value}"
+                    else:
+                        # Use fuzzy matching with lower threshold
+                        matches = process.extract(
+                            l2_value,
+                            list(L2.values()),
+                            scorer=fuzz.WRatio,
+                            score_cutoff=60,  # Lower threshold for better recall
+                            limit=1,
+                            processor=utils.default_process
+                        )
+                        if matches:
+                            matched_value = matches[0][0]
+                            for key, value in L2.items():
+                                if value == matched_value:
+                                    l2_category = f"{key}. {value}"
+                                    print(f"Fuzzy matched L2: '{l2_value}' -> '{value}' (score: {matches[0][1]})")
+                                    break
                 
-                # Parse macro risks
+                # Parse macro risks with improved handling
                 macro_risks = set()
                 if pd.notna(row['MACRO_RISKS']):
-                    # Handle different formats (string, list, comma-separated, semicolon-separated)
                     risks = row['MACRO_RISKS']
+                    # Handle different input formats
                     if isinstance(risks, str):
-                        # Try different delimiters
-                        if ',' in risks:
-                            risks = [r.strip() for r in risks.split(',')]
-                        elif ';' in risks:
-                            risks = [r.strip() for r in risks.split(';')]
-                        elif '\n' in risks:
-                            risks = [r.strip() for r in risks.split('\n')]
-                        else:
+                        # Try various delimiters
+                        delimiters = [',', ';', '\n', '|', '/', '\\']
+                        for delimiter in delimiters:
+                            if delimiter in risks:
+                                risks = [r.strip() for r in risks.split(delimiter)]
+                                break
+                        if isinstance(risks, str):  # If no delimiter was found
                             risks = [risks.strip()]
-                    elif isinstance(risks, list):
+                    elif isinstance(risks, (list, tuple)):
                         risks = [str(r).strip() for r in risks]
                     
-                    # Match with defined macro risks
+                    # Process each risk
                     for risk in risks:
-                        risk = risk.strip()
+                        if not risk:  # Skip empty strings
+                            continue
+                            
+                        risk_lower = risk.lower()
                         matched = False
                         
-                        # First try exact match
-                        for themes in MACRO_RISKS.values():
-                            if risk in themes:
-                                macro_risks.add(risk)
+                        # Try exact match first
+                        for l2_key, risk_list in MACRO_RISKS.items():
+                            if any(r.lower() == risk_lower for r in risk_list):
+                                matched_risk = next(r for r in risk_list if r.lower() == risk_lower)
+                                macro_risks.add(matched_risk)
                                 matched = True
                                 break
                         
-                        # If no exact match, try fuzzy match
+                        # If no exact match, try fuzzy matching
                         if not matched:
-                            best_match = None
-                            best_score = 0
-                            risk_lower = risk.lower()
-                            
-                            for themes in MACRO_RISKS.values():
-                                for theme in themes:
-                                    theme_lower = theme.lower()
-                                    # Calculate similarity score
-                                    words_risk = set(risk_lower.split())
-                                    words_theme = set(theme_lower.split())
-                                    common_words = words_risk & words_theme
-                                    if common_words:
-                                        score = len(common_words) / max(len(words_risk), len(words_theme))
-                                        if score > best_score and score > 0.5:  # Threshold for fuzzy matching
-                                            best_score = score
-                                            best_match = theme
-                            
-                            if best_match:
-                                macro_risks.add(best_match)
-                                print(f"Fuzzy matched macro risk: '{risk}' -> '{best_match}'")
+                            # Get all possible risks for better matching
+                            all_risks = [risk for risks in MACRO_RISKS.values() for risk in risks]
+                            matches = process.extract(
+                                risk,
+                                all_risks,
+                                scorer=fuzz.WRatio,
+                                score_cutoff=60,  # Lower threshold for better recall
+                                limit=1,
+                                processor=utils.default_process
+                            )
+                            if matches:
+                                matched_risk = matches[0][0]
+                                macro_risks.add(matched_risk)
+                                print(f"Fuzzy matched risk: '{risk}' -> '{matched_risk}' (score: {matches[0][1]})")
                 
-                # Collect metadata from additional columns
+                # If we have an L2 category but no risks, try to infer risks from the context
+                if l2_category and not macro_risks:
+                    l2_key = l2_category.split('.')[0]
+                    available_risks = MACRO_RISKS.get(l2_key, [])
+                    
+                    # Look for risk keywords in the context
+                    context_lower = context.lower()
+                    for risk in available_risks:
+                        risk_lower = risk.lower()
+                        risk_words = set(risk_lower.split())
+                        text_words = set(context_lower.split())
+                        
+                        # Check for significant word overlap
+                        common_words = risk_words & text_words
+                        if len(common_words) >= min(2, len(risk_words)):
+                            macro_risks.add(risk)
+                            print(f"Inferred risk from context: '{risk}'")
+                
+                # Collect metadata
                 metadata = {
                     "source": "raw_data",
                     "original_l2": row['L2'] if pd.notna(row['L2']) else None,
                     "original_risks": row['MACRO_RISKS'] if pd.notna(row['MACRO_RISKS']) else None,
                 }
                 
-                # Add additional columns to metadata
+                # Add additional metadata
                 for col in metadata_columns:
                     if pd.notna(row[col]):
                         metadata[col.lower()] = row[col]
                 
-                # Only create example if we have valid L2 and macro risks
-                if l2_category and macro_risks:
+                # Create example if we have either L2 or macro risks
+                if l2_category or macro_risks:
                     example = {
                         "type": "risk",
                         "text": context,
-                        "l2_category": l2_category,
-                        "macro_risks": list(macro_risks),  # Convert set back to list
+                        "l2_category": l2_category if l2_category else "UNKNOWN",
+                        "macro_risks": list(macro_risks) if macro_risks else ["UNSPECIFIED"],
                         "metadata": metadata
                     }
                     training_examples.append(example)
                 else:
-                    print(f"Warning: Skipping finding '{row['FINDING_TITLE']}' due to:")
                     if not l2_category:
-                        print(f"  - Could not map L2 category: '{row['L2'] if pd.notna(row['L2']) else 'N/A'}'")
+                        skipped_reasons['no_l2'] += 1
                     if not macro_risks:
-                        print(f"  - Could not map macro risks: '{row['MACRO_RISKS'] if pd.notna(row['MACRO_RISKS']) else 'N/A'}'")
+                        skipped_reasons['no_risks'] += 1
             
             except Exception as e:
-                print(f"Error processing row: {str(e)}")
+                print(f"Error processing row {idx}: {str(e)}")
+                skipped_reasons['error'] += 1
                 continue
         
-        # Print summary
-        print(f"\nProcessed {len(raw_data)} findings:")
-        print(f"- Successfully mapped: {len(training_examples)}")
-        print(f"- Skipped: {len(raw_data) - len(training_examples)}")
+        # Print detailed summary
+        print(f"\nProcessed {total_rows} findings:")
+        print(f"- Successfully extracted: {len(training_examples)} ({len(training_examples)/total_rows*100:.1f}%)")
+        print("\nSkipped entries breakdown:")
+        for reason, count in skipped_reasons.items():
+            print(f"- {reason}: {count} ({count/total_rows*100:.1f}%)")
         
         if training_examples:
             # Print mapping statistics
             l2_stats = {}
             risk_stats = {}
             for ex in training_examples:
-                l2 = ex['l2_category'].split('.')[0]
-                l2_stats[l2] = l2_stats.get(l2, 0) + 1
+                if ex['l2_category'] != "UNKNOWN":
+                    l2 = ex['l2_category'].split('.')[0]
+                    l2_stats[l2] = l2_stats.get(l2, 0) + 1
                 for risk in ex['macro_risks']:
-                    risk_stats[risk] = risk_stats.get(risk, 0) + 1
+                    if risk != "UNSPECIFIED":
+                        risk_stats[risk] = risk_stats.get(risk, 0) + 1
             
             print("\nL2 Category Distribution:")
             for l2, count in sorted(l2_stats.items()):
-                print(f"  L2 {l2}: {count} findings")
+                print(f"  L2 {l2}: {count} findings ({count/len(training_examples)*100:.1f}%)")
             
             print("\nTop Macro Risks:")
             for risk, count in sorted(risk_stats.items(), key=lambda x: x[1], reverse=True)[:10]:
-                print(f"  {risk}: {count} occurrences")
+                print(f"  {risk}: {count} occurrences ({count/len(training_examples)*100:.1f}%)")
         
     except Exception as e:
         print(f"Error processing findings data: {str(e)}")
