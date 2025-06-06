@@ -510,16 +510,20 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
             print("Loading base model: fdtn-ai/Foundation-Sec-8B")
             
             # Set up device and get training parameters
-            device, bs, ga_steps = setup_device()
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            if device == "cuda":
+                print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+            else:
+                print("Using CPU for inference")
             
             # Clean up memory before loading model
             cleanup_memory()
             
-            # Load model with explicit device mapping
+            # Load model with explicit device mapping and 8-bit quantization
             model_kwargs = {
-                "load_in_8bit": True if "cuda" in device else False,
-                "torch_dtype": torch.float16 if "cuda" in device else torch.float32,
-                "device_map": {"": 0} if "cuda" in device else "auto"  # Force all modules to GPU 0
+                "load_in_8bit": True if device == "cuda" else False,
+                "torch_dtype": torch.float16 if device == "cuda" else torch.float32,
+                "device_map": "auto"
             }
             
             model = AutoModelForCausalLM.from_pretrained(
@@ -527,11 +531,8 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
                 **model_kwargs
             )
             
-            if "cuda" in device:
+            if device == "cuda":
                 model = prepare_model_for_kbit_training(model)
-            
-            # Ensure model is on the correct device
-            model = model.to(device)
             
             # Load tokenizer
             tokenizer = AutoTokenizer.from_pretrained("fdtn-ai/Foundation-Sec-8B")
@@ -593,13 +594,7 @@ Assistant: '''
                 load_from_cache_file=False
             )
             
-            # Create a custom data collator that ensures device consistency
-            class DeviceAwareDataCollator(DataCollatorForLanguageModeling):
-                def __call__(self, features):
-                    batch = super().__call__(features)
-                    return ensure_tensors_on_device(batch, device)
-            
-            # Initialize trainer with device-aware collator
+            # Initialize trainer
             trainer = Trainer(
                 model=model,
                 args=TrainingArguments(
@@ -615,14 +610,14 @@ Assistant: '''
                     logging_steps=10,
                     eval_steps=eval_steps,
                     save_steps=save_steps,
-                    eval_strategy="steps",
+                    evaluation_strategy="steps",
                     save_strategy="steps",
                     load_best_model_at_end=True,
-                    fp16=True if "cuda" in device else False,
+                    fp16=True if device == "cuda" else False,
                     report_to="none",
                     save_total_limit=3,
                     logging_first_step=True,
-                    dataloader_num_workers=4 if "cuda" in device else 0,
+                    dataloader_num_workers=4 if device == "cuda" else 0,
                     dataloader_drop_last=True,
                     max_grad_norm=1.0,
                     no_cuda=device == "cpu",
@@ -631,7 +626,7 @@ Assistant: '''
                 ),
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
-                data_collator=DeviceAwareDataCollator(tokenizer=tokenizer, mlm=False),
+                data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
             )
             
             # Start training
