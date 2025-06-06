@@ -195,8 +195,8 @@ def detect_text_type(model, tokenizer, categories: Dict, text: str) -> str:
         }
     ]
     
-    prompt = tokenizer.apply_chat_template(messages, tokenize=False)
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    # Create inputs without moving to device (model is already on the correct device)
+    inputs = tokenizer(tokenizer.apply_chat_template(messages, tokenize=False), return_tensors="pt")
     
     # Generate the response
     with torch.no_grad():
@@ -244,7 +244,18 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
         ]
         
         # Generate response
-        response = generate_response(model, tokenizer, messages)
+        inputs = tokenizer(tokenizer.apply_chat_template(messages, tokenize=False), return_tensors="pt")
+        
+        with torch.no_grad():
+            outputs = model.generate(
+                inputs["input_ids"],
+                max_new_tokens=512,
+                temperature=0.1,
+                top_p=0.9,
+                do_sample=True
+            )
+        
+        response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
         
         try:
             # Parse the JSON response
@@ -288,8 +299,8 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
         }
     ]
     
-    prompt = tokenizer.apply_chat_template(messages, tokenize=False)
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    # Create inputs without moving to device
+    inputs = tokenizer(tokenizer.apply_chat_template(messages, tokenize=False), return_tensors="pt")
     
     # Generate the response
     with torch.no_grad():
