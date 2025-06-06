@@ -13,105 +13,110 @@ This repository contains tools for fine-tuning the Foundation-Sec-8B model to pe
 git clone <repository-url>
 cd Foundation-Sec-8B_finetunned
 
+# Create and activate virtual environment (recommended)
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
 # Install dependencies
 pip install -r requirements.txt
 ```
 
-### Basic Usage
+### Running the Pipeline
 
-1. **Fine-tune the model with your data:**
+There are three main ways to use this system:
+
+1. **Enhanced Data Processing & Fine-Tuning (Recommended)**:
 ```bash
-# Using pre-formatted training data (JSONL)
-python risk_fine_tuner.py --training-data training_data.jsonl --output my_model
+# Process raw data and optionally start fine-tuning
+python run_enhanced_fine_tuner.py --folder /path/to/raw/data --run-fine-tuning
 
-# Using raw Excel/CSV files (automatic processing)
-python risk_fine_tuner.py --training-data /path/to/excel/folder --output my_model
+# This will:
+# 1. Process all Excel/CSV files in the folder
+# 2. Generate training examples
+# 3. Start fine-tuning if --run-fine-tuning is specified
 ```
 
-2. **Use the fine-tuned model for inference:**
+2. **Direct Fine-Tuning** (if you have pre-formatted data):
 ```bash
-# Analyze a single text
-python risk_inference.py --model my_model/unified_model_with_categories.pkl --text "Critical SQL injection vulnerability found in login system"
-
-# Batch analysis from file
-python risk_inference.py --model my_model/unified_model_with_categories.pkl --file texts.txt --output results.json
+python risk_fine_tuner.py --training-data your_data.jsonl --output my_model
 ```
 
-## 📊 Data Formats
-
-### Training Data Formats
-
-The fine-tuner accepts multiple data formats:
-
-#### 1. Pre-formatted JSONL (Recommended for labeled data)
-Each line should be a JSON object with:
-- **For risk examples:**
-```json
-{
-  "type": "risk",
-  "text": "The firewall configuration allows unrestricted access from external IPs",
-  "macro_risk": "7. Manage Infrastructure",
-  "risk_themes": ["Network Segmentation", "Configuration Management"]
-}
-```
-
-- **For PII examples:**
-```json
-{
-  "type": "pii",
-  "text": "Customer John Doe, email: john@example.com, SSN: 123-45-6789",
-  "pc_category": "PC3",
-  "pii_types": ["Name", "Email", "SSN"]
-}
-```
-
-#### 2. Raw Excel/CSV Files (Automatic processing)
-Simply point to a folder containing Excel (.xlsx, .xls) or CSV files:
+3. **Inference** (after fine-tuning):
 ```bash
-python risk_fine_tuner.py --training-data /path/to/raw/data/folder --output my_model
+python risk_inference.py --model my_model/unified_model_with_categories.pkl --text "Your text here"
 ```
 
-The system will:
-- Extract text from all sheets and rows
-- Automatically categorize content using 100+ security keywords
-- Detect PII using pattern matching
-- Generate training examples with confidence scores
+## 📊 Data Processing
 
-## 🏗️ Architecture
+### Input Data Support
 
-### Components
+The system now supports various input formats and field names:
 
-1. **risk_fine_tuner.py** - Main fine-tuning script
-   - Loads and processes training data
-   - Performs LoRA fine-tuning for efficiency
-   - Creates inference package (pickle file)
+#### Title Fields:
+- Finding_Title, Title, FINDING_TITLE, TITLE
+- Name, NAME, Summary, SUMMARY
+- Issue_Title, ISSUE, Observation_Title
+- Vulnerability_Title, Vuln_Title, Heading, Subject
 
-2. **risk_fine_tuner_enhanced.py** - Raw data processing
-   - Extracts text from Excel/CSV files
-   - Analyzes content for risk categories
-   - Detects PII patterns
-   - Generates training examples
+#### Description Fields:
+- Finding_Description, Description, DESCRIPTION
+- Details, DETAILS, Content, CONTENT
+- Issue_Description, Detail, Observation
+- Observation_Details, Vulnerability_Description
+- Finding_Details, Notes, Comments, Body
 
-3. **risk_inference.py** - Inference script
-   - Loads fine-tuned model from pickle
-   - Automatically detects if text is risk or PII
-   - Returns structured JSON results
+#### Category Fields:
+- L2, Category, Type, Classification
+- Risk_Category, Finding_Category
+- Vulnerability_Type, Vuln_Type, Risk_Type
+- Issue_Type, Severity, Risk_Classification
+- Security_Classification
 
-4. **run_enhanced_fine_tuner.py** - User-friendly wrapper
-   - Simplified interface for processing raw data
-   - Progress tracking and error handling
+#### Risk Fields:
+- macro_risks, Risks, Risk_Types, Categories
+- Risk_Tags, Tags, Risk_Classification
+- Threat_Types, Threat_Categories
+- Impact_Types, Vulnerability_Tags
+- Security_Tags, Risk_Areas, Risk_Domains
+
+### Output Files
+
+The system generates several output files:
+
+```
+output_directory/
+├── auto_generated_training_data.jsonl  # Processed training examples
+├── extraction_summary.json             # Processing statistics
+├── unified_model_with_categories.pkl   # Fine-tuned model package
+└── fine_tuned_model/                  # Model files
+```
+
+### Example Output Statistics
+
+```
+Extracted 1000 examples:
+- Complete examples: 600    (with both L2 and risks)
+- With L2 only: 100        (missing risks)
+- With risks only: 50      (missing L2)
+- Partial examples: 250    (useful but incomplete)
+```
 
 ## 🔧 Advanced Usage
 
-### Processing Raw Data
+### Processing Options
 
 ```bash
-# Process a folder of Excel files with the enhanced script
-python run_enhanced_fine_tuner.py /path/to/excel/files
+# Process data with custom options
+python run_enhanced_fine_tuner.py \
+  --folder /path/to/data \
+  --output custom_output \
+  --run-fine-tuning
 
-# This creates:
-# - extracted_data/training_data.jsonl (processed examples)
-# - extracted_data/extraction_summary.json (statistics)
+# Process and save to specific directory
+python run_enhanced_fine_tuner.py \
+  --folder /path/to/data \
+  --output my_output \
+  --training-data training_data
 ```
 
 ### Linux Environment Setup
@@ -119,98 +124,40 @@ python run_enhanced_fine_tuner.py /path/to/excel/files
 If you encounter library issues on Linux:
 
 ```bash
-# Use the provided fix scripts
+# Fix environment issues
 ./fix_threading.sh
-./run_python_fixed.sh risk_fine_tuner.py --training-data data.jsonl
-```
 
-### Custom Categories
-
-The system uses standardized risk categories defined in the scripts:
-
-**L2 Categories:**
-1. Operating Model & Risk Management
-2. Develop and Acquire Software and Systems
-3. Manage & Demise IT Assets
-4. Manage Data
-5. Protect Data
-6. Identity & Access Management
-7. Manage Infrastructure
-8. Manage IT Vulnerabilities & Patching
-9. Manage Technology Capacity & Resources
-10. Monitor & Respond to Technology Incidents
-11. Monitor and Respond to Security Incidents
-12. Manage Business Continuity and Disaster Recovery
-
-Each L2 category has associated **Macro Risks** that represent specific vulnerabilities or weaknesses within that category.
-
-**PII Protection Categories:**
-- PC0: Public information (no confidentiality requirements)
-- PC1: Internal information (basic confidentiality)
-- PC3: Confidential information (high protection requirements)
-
-## 📁 Output Files
-
-After fine-tuning, you'll find:
-
-```
-output_directory/
-├── unified_model_with_categories.pkl  # Main inference package
-├── final_model/                       # Fine-tuned model files
-├── unified_train.jsonl               # Formatted training data
-├── unified_eval.jsonl                # Evaluation data
-└── checkpoints/                      # Training checkpoints
-```
-
-## 🧪 Testing
-
-Run the integration test to verify everything works:
-
-```bash
-python test_integration.py
-```
-
-This creates test data and shows the complete workflow.
-
-## 💡 Examples
-
-### Example 1: Analyze a security finding
-```bash
-python risk_inference.py \
-  --model my_model/unified_model_with_categories.pkl \
-  --text "Database backup encryption keys stored in plaintext configuration file"
-```
-
-Expected output:
-```
-Type: Security Risk
-L2 Category: 5. Protect Data
-Macro Risks: Encryption (At Rest, Use, Transit), Secrets Management
-```
-
-### Example 2: Detect PII
-```bash
-python risk_inference.py \
-  --model my_model/unified_model_with_categories.pkl \
-  --text "Employee record: Jane Smith, DOB: 01/15/1985, Salary: $85,000"
-```
-
-Expected output:
-```
-Type: PII
-Protection Category: PC3
-PII Types: Name, DOB, Financial
+# Run scripts with fixes
+./run_python_fixed.sh run_enhanced_fine_tuner.py --folder /path/to/data
 ```
 
 ## 🐛 Troubleshooting
 
-### "No valid training examples found"
-- Ensure your data is in the correct format
-- For raw Excel files, check they contain text data
-- Verify file permissions
+### Common Issues
 
-### Memory issues during fine-tuning
-- Reduce batch size in the script
+1. **"No training examples could be generated"**
+   - Check your input data format
+   - Verify column names match supported fields
+   - Ensure files contain meaningful text content
+   - Check the extraction_summary.json for details
+
+2. **Memory Issues**
+   - Data is processed in batches of 5000 rows
+   - Reduce batch size if needed in the code
+   - Use virtual environment with clean dependencies
+
+3. **Excel/CSV Reading Errors**
+   - Verify file permissions
+   - Check file encoding (UTF-8, latin1, etc.)
+   - Ensure files aren't corrupted or locked
+
+### Debug Output
+
+The system now provides focused error reporting:
+- File processing status
+- Critical errors only
+- Processing statistics
+- Extraction summary
 
 ## 📚 Risk Categories
 
