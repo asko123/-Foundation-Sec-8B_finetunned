@@ -239,23 +239,14 @@ def process_raw_data_to_training_examples(raw_data: List[Dict[str, Any]]) -> Lis
         }
     }
     
-    print(f"\nStarting to process {len(raw_data)} raw data entries...")
+    print(f"Processing {len(raw_data)} entries...")
     
     for idx, entry in enumerate(raw_data):
         try:
-            if idx % 1000 == 0:
-                print(f"Processing entry {idx}/{len(raw_data)}")
-            
             # Skip completely empty entries
             if not entry:
                 debug_stats['empty_entries'] += 1
                 continue
-            
-            # Debug print entry structure
-            if idx == 0:
-                print("\nFirst entry structure:")
-                for key, value in entry.items():
-                    print(f"  {key}: {type(value).__name__}")
             
             # Create basic example structure
             example = {
@@ -326,54 +317,22 @@ def process_raw_data_to_training_examples(raw_data: List[Dict[str, Any]]) -> Lis
                 debug_stats['processed_entries'] += 1
             else:
                 debug_stats['failed_entries'] += 1
-                
-            # Debug print for first few failed entries
-            if not text_parts and debug_stats['failed_entries'] <= 5:
-                print(f"\nFailed to extract text from entry {idx}:")
-                print("Entry keys:", list(entry.keys()))
-                print("Entry values:", {k: str(v)[:100] + '...' if isinstance(v, str) and len(str(v)) > 100 else v 
-                                     for k, v in entry.items()})
         
         except Exception as e:
             print(f"Error processing entry {idx}: {str(e)}")
             debug_stats['failed_entries'] += 1
-            if debug_stats['failed_entries'] <= 5:
-                print("Entry:", entry)
-                traceback.print_exc()
+            traceback.print_exc()
     
-    # Print debug statistics
-    print("\nProcessing Statistics:")
-    print(f"Total entries: {debug_stats['total_entries']}")
-    print(f"Empty entries: {debug_stats['empty_entries']}")
-    print(f"Successfully processed: {debug_stats['processed_entries']}")
-    print(f"Failed to process: {debug_stats['failed_entries']}")
-    print("\nField Statistics:")
-    print(f"Entries with title: {debug_stats['field_stats']['title']}")
-    print(f"Entries with description: {debug_stats['field_stats']['description']}")
-    print(f"Entries with L2 category: {debug_stats['field_stats']['l2']}")
-    print(f"Entries with risks: {debug_stats['field_stats']['risks']}")
-    
-    if not training_examples:
-        print("\nWARNING: No training examples were generated!")
-        print("Sample of raw data entries:")
-        for i, entry in enumerate(raw_data[:5]):
-            print(f"\nEntry {i + 1}:")
-            for key, value in entry.items():
-                print(f"  {key}: {str(value)[:100]}{'...' if isinstance(value, str) and len(str(value)) > 100 else ''}")
+    # Print only essential statistics
+    print(f"\nProcessed {debug_stats['total_entries']} entries:")
+    print(f"- Successfully extracted: {debug_stats['processed_entries']} ({debug_stats['processed_entries']/debug_stats['total_entries']*100:.1f}%)")
+    if debug_stats['failed_entries'] > 0:
+        print(f"- Failed to process: {debug_stats['failed_entries']} ({debug_stats['failed_entries']/debug_stats['total_entries']*100:.1f}%)")
     
     return training_examples
 
 def process_folder_for_training_data(folder_path: str, output_dir: str = "training_data") -> str:
-    """
-    Process all files in a folder to extract training data.
-    
-    Args:
-        folder_path: Path to the folder containing raw data files
-        output_dir: Directory to save processed training data
-        
-    Returns:
-        Path to the generated training data file
-    """
+    """Process all files in a folder to extract training data."""
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     
@@ -387,8 +346,6 @@ def process_folder_for_training_data(folder_path: str, output_dir: str = "traini
     all_raw_data = []
     
     for file_path in files_to_process:
-        print(f"\nProcessing file: {file_path}")
-        
         file_ext = os.path.splitext(file_path)[1].lower()
         
         if file_ext in ['.xlsx', '.xls']:
@@ -401,11 +358,6 @@ def process_folder_for_training_data(folder_path: str, output_dir: str = "traini
         
         if raw_data:
             all_raw_data.extend(raw_data)
-            print(f"Extracted {len(raw_data)} entries from {os.path.basename(file_path)}")
-        else:
-            print(f"Warning: No data extracted from {os.path.basename(file_path)}")
-    
-    print(f"\nTotal raw data entries extracted: {len(all_raw_data)}")
     
     if not all_raw_data:
         raise ValueError("No raw data could be extracted from any files")
@@ -419,74 +371,13 @@ def process_folder_for_training_data(folder_path: str, output_dir: str = "traini
         with open(backup_file, 'w', encoding='utf-8') as f:
             for entry in all_raw_data:
                 f.write(json.dumps(entry) + '\n')
-        print(f"\nWarning: No training examples could be generated. Raw data saved to: {backup_file}")
-        print("This might be due to:")
+        print(f"\nERROR: No training examples could be generated.")
+        print(f"Raw data saved to: {backup_file}")
+        print("Common issues:")
         print("1. Missing or invalid L2 categories")
         print("2. Missing or invalid macro risks")
         print("3. Empty or invalid text content")
-        print("\nPlease check the raw data backup file for debugging.")
-        
-        # Try to generate at least partial examples
-        print("\nAttempting to generate partial examples...")
-        partial_examples = []
-        
-        for entry in all_raw_data:
-            try:
-                # Create basic example with available data
-                example = {
-                    "type": "risk",
-                    "text": "",
-                    "l2_category": "UNKNOWN",
-                    "macro_risks": ["UNSPECIFIED"],
-                    "metadata": {"source": "raw_data"}
-                }
-                
-                # Add text content
-                text_parts = []
-                if entry.get('Finding_Title'):
-                    text_parts.append(f"Finding: {entry['Finding_Title']}")
-                if entry.get('Finding_Description'):
-                    text_parts.append(f"Description: {entry['Finding_Description']}")
-                
-                # Try alternative field names
-                for key in entry:
-                    if 'title' in key.lower() and key not in ['Finding_Title']:
-                        text_parts.append(f"{key}: {entry[key]}")
-                    elif any(term in key.lower() for term in ['desc', 'detail', 'note', 'comment']):
-                        text_parts.append(f"{key}: {entry[key]}")
-                
-                if text_parts:
-                    example['text'] = "\n\n".join(text_parts)
-                    
-                    # Try to extract L2 category
-                    if entry.get('L2'):
-                        example['l2_category'] = entry['L2']
-                    elif entry.get('Category'):
-                        example['l2_category'] = entry['Category']
-                    
-                    # Try to extract macro risks
-                    if entry.get('macro_risks'):
-                        risks = entry['macro_risks']
-                        if isinstance(risks, list):
-                            example['macro_risks'] = risks
-                        elif isinstance(risks, str):
-                            example['macro_risks'] = [r.strip() for r in risks.split(',')]
-                    
-                    # Add all other fields as metadata
-                    for key, value in entry.items():
-                        if key not in ['Finding_Title', 'Finding_Description', 'L2', 'macro_risks']:
-                            example['metadata'][key] = value
-                    
-                    partial_examples.append(example)
-            except Exception as e:
-                print(f"Error processing entry: {str(e)}")
-                continue
-        
-        if partial_examples:
-            print(f"\nGenerated {len(partial_examples)} partial examples")
-            training_examples = partial_examples
-        else:
-            raise ValueError("Could not generate any training examples, even with relaxed requirements")
+        raise ValueError("Could not generate any training examples, even with relaxed requirements")
     
     # Save training examples to JSONL file
     training_file_path = os.path.join(output_dir, "auto_generated_training_data.jsonl")
@@ -495,9 +386,7 @@ def process_folder_for_training_data(folder_path: str, output_dir: str = "traini
         for example in training_examples:
             f.write(json.dumps(example) + '\n')
     
-    print(f"\nSaved {len(training_examples)} training examples to: {training_file_path}")
-    
-    # Also save a summary report
+    # Save summary report
     summary_path = os.path.join(output_dir, "extraction_summary.json")
     summary = {
         "total_files_processed": len(files_to_process),
@@ -505,8 +394,6 @@ def process_folder_for_training_data(folder_path: str, output_dir: str = "traini
         "total_training_examples": len(training_examples),
         "risk_examples": len([ex for ex in training_examples if ex["type"] == "risk"]),
         "pii_examples": len([ex for ex in training_examples if ex["type"] == "pii"]),
-        "processed_files": [os.path.basename(f) for f in files_to_process],
-        "extraction_timestamp": pd.Timestamp.now().isoformat(),
         "example_stats": {
             "with_l2": len([ex for ex in training_examples if ex["l2_category"] != "UNKNOWN"]),
             "with_risks": len([ex for ex in training_examples if ex["macro_risks"] != ["UNSPECIFIED"]]),
@@ -518,12 +405,11 @@ def process_folder_for_training_data(folder_path: str, output_dir: str = "traini
     with open(summary_path, 'w', encoding='utf-8') as f:
         json.dump(summary, f, indent=2)
     
-    print(f"Saved extraction summary to: {summary_path}")
-    print("\nExample statistics:")
-    print(f"- Total examples: {summary['total_training_examples']}")
-    print(f"- With L2 category: {summary['example_stats']['with_l2']}")
-    print(f"- With macro risks: {summary['example_stats']['with_risks']}")
+    print(f"\nExtracted {len(training_examples)} examples:")
     print(f"- Complete examples: {summary['example_stats']['complete']}")
+    print(f"- With L2 only: {summary['example_stats']['with_l2'] - summary['example_stats']['complete']}")
+    print(f"- With risks only: {summary['example_stats']['with_risks'] - summary['example_stats']['complete']}")
+    print(f"- Partial examples: {len(training_examples) - summary['example_stats']['complete']}")
     
     return training_file_path
 
@@ -975,22 +861,9 @@ def extract_text_from_excel(file_path: str) -> List[Dict[str, Any]]:
         
         # Try to read all sheets
         all_sheets = pd.read_excel(file_path, sheet_name=None)
-        print(f"Found {len(all_sheets)} sheets: {list(all_sheets.keys())}")
-        
         all_data = []
         
         for sheet_name, df in all_sheets.items():
-            print(f"\nProcessing sheet: {sheet_name}")
-            print(f"Sheet dimensions: {df.shape[0]} rows × {df.shape[1]} columns")
-            print("Columns:", list(df.columns))
-            
-            # Sample first row
-            if not df.empty:
-                print("\nFirst row sample:")
-                first_row = df.iloc[0].to_dict()
-                for col, val in first_row.items():
-                    print(f"  {col}: {str(val)[:100]}{'...' if isinstance(val, str) and len(str(val)) > 100 else ''}")
-            
             # Convert DataFrame to list of dictionaries
             sheet_data = df.replace({np.nan: None}).to_dict('records')
             
@@ -999,9 +872,8 @@ def extract_text_from_excel(file_path: str) -> List[Dict[str, Any]]:
                 record['_sheet_name'] = sheet_name
             
             all_data.extend(sheet_data)
-            print(f"Added {len(sheet_data)} records from sheet {sheet_name}")
         
-        print(f"\nTotal records extracted: {len(all_data)}")
+        print(f"Extracted {len(all_data)} records from Excel file")
         return all_data
             
     except Exception as e:
@@ -1021,7 +893,6 @@ def extract_text_from_csv(file_path: str) -> List[Dict[str, Any]]:
         for encoding in encodings:
             try:
                 df = pd.read_csv(file_path, encoding=encoding)
-                print(f"Successfully read file with {encoding} encoding")
                 break
             except UnicodeDecodeError:
                 continue
@@ -1029,19 +900,9 @@ def extract_text_from_csv(file_path: str) -> List[Dict[str, Any]]:
         if df is None:
             raise ValueError(f"Could not read CSV file with any of the attempted encodings: {encodings}")
         
-        print(f"File dimensions: {df.shape[0]} rows × {df.shape[1]} columns")
-        print("Columns:", list(df.columns))
-        
-        # Sample first row
-        if not df.empty:
-            print("\nFirst row sample:")
-            first_row = df.iloc[0].to_dict()
-            for col, val in first_row.items():
-                print(f"  {col}: {str(val)[:100]}{'...' if isinstance(val, str) and len(str(val)) > 100 else ''}")
-        
         # Convert DataFrame to list of dictionaries
         data = df.replace({np.nan: None}).to_dict('records')
-        print(f"Total records extracted: {len(data)}")
+        print(f"Extracted {len(data)} records from CSV file")
         return data
             
     except Exception as e:
