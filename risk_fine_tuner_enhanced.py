@@ -25,7 +25,7 @@ import re
 from typing import List, Dict, Any, Optional, Tuple, Union
 from tqdm import tqdm
 import pandas as pd
-from rapidfuzz import fuzz
+from rapidfuzz import fuzz, process, utils
 
 # Import constants
 from risk_fine_tuner_constants import (
@@ -51,40 +51,66 @@ def scan_folder_for_files(folder_path: str) -> List[str]:
     
     return files_to_process
 
-def calculate_string_similarity(str1: str, str2: str) -> float:
+def calculate_string_similarity(str1: str, str2: str, score_cutoff: float = 65) -> float:
     """
-    Calculate string similarity using a combination of methods:
-    1. Exact match
-    2. Contains check
-    3. Token set ratio (handles word reordering)
-    4. Partial ratio (handles substrings)
+    Calculate string similarity using rapidfuzz's advanced features.
     
     Args:
         str1: First string to compare
         str2: Second string to compare
+        score_cutoff: Minimum score threshold (0-100)
         
     Returns:
         Similarity score between 0 and 1
     """
-    str1_lower = str1.lower()
-    str2_lower = str2.lower()
+    # Preprocess strings
+    str1_proc = utils.default_process(str1)
+    str2_proc = utils.default_process(str2)
+    
+    if not str1_proc or not str2_proc:
+        return 0.0
     
     # Exact match
-    if str1_lower == str2_lower:
+    if str1_proc == str2_proc:
         return 1.0
+    
+    # Calculate different types of ratios
+    ratios = [
+        fuzz.ratio(str1_proc, str2_proc, score_cutoff=score_cutoff),
+        fuzz.partial_ratio(str1_proc, str2_proc, score_cutoff=score_cutoff),
+        fuzz.token_sort_ratio(str1_proc, str2_proc, score_cutoff=score_cutoff),
+        fuzz.token_set_ratio(str1_proc, str2_proc, score_cutoff=score_cutoff),
+        fuzz.WRatio(str1_proc, str2_proc, score_cutoff=score_cutoff)
+    ]
+    
+    # Return the highest score normalized to 0-1 range
+    return max((score for score in ratios if score is not None), default=0) / 100.0
+
+def find_best_matches(query: str, choices: List[str], limit: int = 3, score_cutoff: float = 0.65) -> List[Tuple[str, float]]:
+    """
+    Find the best matching strings from a list of choices using rapidfuzz's process.
+    
+    Args:
+        query: String to match against
+        choices: List of strings to search through
+        limit: Maximum number of matches to return
+        score_cutoff: Minimum similarity score (0-1)
         
-    # Contains check
-    if str1_lower in str2_lower or str2_lower in str1_lower:
-        return 0.9
+    Returns:
+        List of tuples (matched_string, score)
+    """
+    # Use rapidfuzz's process.extractBests for efficient matching
+    matches = process.extractBests(
+        query,
+        choices,
+        scorer=fuzz.WRatio,
+        score_cutoff=score_cutoff * 100,
+        limit=limit,
+        processor=utils.default_process
+    )
     
-    # Token set ratio (handles word reordering)
-    token_score = fuzz.token_set_ratio(str1_lower, str2_lower) / 100.0
-    
-    # Partial ratio (handles substrings)
-    partial_score = fuzz.partial_ratio(str1_lower, str2_lower) / 100.0
-    
-    # Return the maximum of the two scores
-    return max(token_score, partial_score)
+    # Convert scores to 0-1 range
+    return [(match[0], match[1] / 100.0) for match in matches]
 
 def analyze_content_for_risk_category(text: str) -> Tuple[str, List[str], float]:
     """
@@ -96,61 +122,52 @@ def analyze_content_for_risk_category(text: str) -> Tuple[str, List[str], float]
     Returns:
         Tuple of (l2_category, macro_risks, confidence_score)
     """
-    text_lower = text.lower()
-    
     # Initialize variables
     best_l2 = None
     best_l2_score = 0
     identified_risks = set()
     
-    # Function to find best match
-    def find_best_match(text: str, candidates: Dict[str, str], threshold: float = 0.85) -> Tuple[Optional[str], float]:
-        best_match = None
-        best_score = 0
-        
-        for key, value in candidates.items():
-            score = calculate_string_similarity(text, value)
-            
-            if score > best_score and score >= threshold:
-                best_score = score
-                best_match = f"{key}. {value}"
-        
-        return best_match, best_score
-    
     # Find best L2 category match
-    best_l2, best_l2_score = find_best_match(text, L2)
+    l2_matches = process.extractBests(
+        text,
+        {key: value for key, value in L2.items()}.values(),
+        scorer=fuzz.WRatio,
+        score_cutoff=75,  # Require higher confidence for L2 categories
+        limit=1,
+        processor=utils.default_process
+    )
+    
+    if l2_matches:
+        matched_value = l2_matches[0][0]
+        best_l2_score = l2_matches[0][1] / 100.0
+        # Find the key for this value
+        for key, value in L2.items():
+            if value == matched_value:
+                best_l2 = f"{key}. {value}"
+                break
     
     # If we found an L2 category, look for associated macro risks
     if best_l2:
         l2_key = best_l2.split('.')[0]
+        available_risks = MACRO_RISKS.get(l2_key, [])
         
-        # Function to find best risk match
-        def find_best_risk_match(text: str, risks: List[str], threshold: float = 0.85) -> Optional[str]:
-            best_match = None
-            best_score = 0
+        # Extract potential risk phrases from text
+        text_proc = utils.default_process(text)
+        if text_proc:
+            # Find all potential matches using token set ratio
+            risk_matches = process.extractBests(
+                text_proc,
+                available_risks,
+                scorer=fuzz.token_set_ratio,
+                score_cutoff=65,  # More lenient for risks
+                limit=None,  # Get all matches above score_cutoff
+                processor=utils.default_process
+            )
             
-            for risk in risks:
-                score = calculate_string_similarity(text, risk)
-                
-                if score > best_score and score >= threshold:
-                    best_score = score
-                    best_match = risk
-            
-            return best_match
-        
-        # Look for risk keywords in text
-        words = set(text_lower.split())
-        for risk in MACRO_RISKS.get(l2_key, []):
-            risk_lower = risk.lower()
-            risk_words = set(risk_lower.split())
-            
-            # If any risk keyword is found, try to match the full risk
-            if risk_words & words:
-                # Try to find the best matching risk from the L2 category's risks
-                matched_risk = find_best_risk_match(risk, MACRO_RISKS[l2_key])
-                if matched_risk:
-                    identified_risks.add(matched_risk)
-                    print(f"Matched risk: '{risk}' -> '{matched_risk}'")
+            # Add matched risks with their confidence scores
+            for risk, score in risk_matches:
+                identified_risks.add(risk)
+                print(f"Matched risk: '{risk}' (confidence: {score/100:.2f})")
     
     return best_l2, list(identified_risks), best_l2_score
 
@@ -699,18 +716,7 @@ def extract_text_from_csv(file_path: str) -> List[Dict[str, Any]]:
         return []
 
 def process_privacy_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
-    """
-    Process raw privacy/PII data into training examples.
-    
-    Expected columns:
-    - COLUMNNAME: Name of the database column
-    - PRIVACYTYPE: Type of privacy data
-    - PRIVACYTYPENAME: Name of the privacy type
-    - PRIVACYTYPECLASSIFICATION: Privacy classification level
-    - ENTITYNAME: (Optional) Name of the entity
-    - ENTITYDESC: (Optional) Description of the entity
-    - PRIVACYTYPEDESCRIPTION: (Optional) Description of the privacy type
-    """
+    """Process raw privacy/PII data into training examples."""
     training_examples = []
     
     try:
@@ -755,34 +761,37 @@ def process_privacy_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
                 privacy_type = str(row['PRIVACYTYPE']).strip()
                 privacy_name = str(row.get('PRIVACYTYPENAME', '')).strip()
                 
-                # Function to find best match
-                def find_best_match(text: str, candidates: List[str], threshold: float = 0.85) -> Optional[str]:
-                    best_match = None
-                    best_score = 0
-                    
-                    for candidate in candidates:
-                        score = calculate_string_similarity(text, candidate)
-                        
-                        if score > best_score and score >= threshold:
-                            best_score = score
-                            best_match = candidate
-                    
-                    return best_match
-                
-                # Try to match privacy type and name against PII types
+                # Find PII types using process.extractBests
                 for text in [privacy_type, privacy_name]:
                     if pd.notna(text):
-                        match = find_best_match(text, PII_TYPES)
-                        if match:
+                        matches = process.extractBests(
+                            text,
+                            PII_TYPES,
+                            scorer=fuzz.WRatio,
+                            score_cutoff=75,  # Higher threshold for PII type matching
+                            limit=2,  # Get top 2 matches
+                            processor=utils.default_process
+                        )
+                        
+                        for match, score in matches:
                             pii_types.add(match)
-                            print(f"Matched PII type: '{text}' -> '{match}'")
+                            print(f"Matched PII type: '{text}' -> '{match}' (confidence: {score/100:.2f})")
                 
                 # Also check the description for additional PII types
                 if pd.notna(row.get('PRIVACYTYPEDESCRIPTION')):
                     desc = str(row['PRIVACYTYPEDESCRIPTION'])
-                    for pii_type in PII_TYPES:
-                        if calculate_string_similarity(pii_type, desc) > 0.85:
-                            pii_types.add(pii_type)
+                    desc_matches = process.extractBests(
+                        desc,
+                        PII_TYPES,
+                        scorer=fuzz.token_set_ratio,  # Better for longer text
+                        score_cutoff=65,  # Lower threshold for description matching
+                        limit=3,  # Get top 3 matches
+                        processor=utils.default_process
+                    )
+                    
+                    for match, score in desc_matches:
+                        pii_types.add(match)
+                        print(f"Matched PII type from description: '{match}' (confidence: {score/100:.2f})")
                 
                 # If no PII types found through matching, analyze the text
                 if not pii_types:
