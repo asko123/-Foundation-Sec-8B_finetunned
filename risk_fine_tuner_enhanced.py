@@ -99,8 +99,8 @@ def find_best_matches(query: str, choices: List[str], limit: int = 3, score_cuto
     Returns:
         List of tuples (matched_string, score)
     """
-    # Use rapidfuzz's process.extractBests for efficient matching
-    matches = process.extractBests(
+    # Use rapidfuzz's process.extract for efficient matching
+    matches = process.extract(
         query,
         choices,
         scorer=fuzz.WRatio,
@@ -128,7 +128,7 @@ def analyze_content_for_risk_category(text: str) -> Tuple[str, List[str], float]
     identified_risks = set()
     
     # Find best L2 category match
-    l2_matches = process.extractBests(
+    l2_matches = process.extract(
         text,
         {key: value for key, value in L2.items()}.values(),
         scorer=fuzz.WRatio,
@@ -155,7 +155,7 @@ def analyze_content_for_risk_category(text: str) -> Tuple[str, List[str], float]
         text_proc = utils.default_process(text)
         if text_proc:
             # Find all potential matches using token set ratio
-            risk_matches = process.extractBests(
+            risk_matches = process.extract(
                 text_proc,
                 available_risks,
                 scorer=fuzz.token_set_ratio,
@@ -165,7 +165,7 @@ def analyze_content_for_risk_category(text: str) -> Tuple[str, List[str], float]
             )
             
             # Add matched risks with their confidence scores
-            for risk, score in risk_matches:
+            for risk, score, _ in risk_matches:
                 identified_risks.add(risk)
                 print(f"Matched risk: '{risk}' (confidence: {score/100:.2f})")
     
@@ -761,10 +761,10 @@ def process_privacy_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
                 privacy_type = str(row['PRIVACYTYPE']).strip()
                 privacy_name = str(row.get('PRIVACYTYPENAME', '')).strip()
                 
-                # Find PII types using process.extractBests
+                # Find PII types using process.extract
                 for text in [privacy_type, privacy_name]:
                     if pd.notna(text):
-                        matches = process.extractBests(
+                        matches = process.extract(
                             text,
                             PII_TYPES,
                             scorer=fuzz.WRatio,
@@ -773,14 +773,14 @@ def process_privacy_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
                             processor=utils.default_process
                         )
                         
-                        for match, score in matches:
+                        for match, score, _ in matches:
                             pii_types.add(match)
                             print(f"Matched PII type: '{text}' -> '{match}' (confidence: {score/100:.2f})")
                 
                 # Also check the description for additional PII types
                 if pd.notna(row.get('PRIVACYTYPEDESCRIPTION')):
                     desc = str(row['PRIVACYTYPEDESCRIPTION'])
-                    desc_matches = process.extractBests(
+                    desc_matches = process.extract(
                         desc,
                         PII_TYPES,
                         scorer=fuzz.token_set_ratio,  # Better for longer text
@@ -789,7 +789,7 @@ def process_privacy_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
                         processor=utils.default_process
                     )
                     
-                    for match, score in desc_matches:
+                    for match, score, _ in desc_matches:
                         pii_types.add(match)
                         print(f"Matched PII type from description: '{match}' (confidence: {score/100:.2f})")
                 
