@@ -488,6 +488,33 @@ def analyze_skipped_entries(raw_data: pd.DataFrame, skipped_reasons: Dict[str, i
     
     return analysis
 
+def is_meaningful_text(text: str) -> bool:
+    """Check if text contains meaningful content."""
+    if pd.isna(text):
+        return False
+    text = str(text).strip()
+    # Check if text is empty or just special characters/whitespace
+    if not text or re.match(r'^[\s\W]*$', text):
+        return False
+    # Check if text is too short or just numbers
+    if len(text) < 3 or text.isdigit():
+        return False
+    return True
+
+def clean_text(text: str) -> str:
+    """Clean and normalize text."""
+    if pd.isna(text):
+        return ""
+    # Convert to string and strip whitespace
+    text = str(text).strip()
+    # Remove multiple spaces
+    text = re.sub(r'\s+', ' ', text)
+    # Remove special characters that don't add meaning
+    text = re.sub(r'[^\w\s\-.,;:?!()]', ' ', text)
+    # Remove empty brackets
+    text = re.sub(r'\(\s*\)', '', text)
+    return text.strip()
+
 def process_findings_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
     """Process raw findings data into training examples with improved matching."""
     training_examples = []
@@ -502,12 +529,42 @@ def process_findings_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
     try:
         # Clean column names and handle variations
         raw_data.columns = [str(col).strip().upper() for col in raw_data.columns]
+        
+        # Add more column variations
         column_mapping = {
-            'FINDING_TITLE': ['FINDING_TITLE', 'TITLE', 'FINDING NAME', 'NAME', 'FINDING', 'SUMMARY', 'ISSUE_TITLE', 'ISSUE'],
-            'FINDING_DESCRIPTION': ['FINDING_DESCRIPTION', 'DESCRIPTION', 'DESC', 'DETAILS', 'FINDING DETAILS', 'ISSUE_DESCRIPTION', 'DETAIL', 'OBSERVATION'],
-            'L2': ['L2', 'L2_CATEGORY', 'CATEGORY', 'RISK_CATEGORY', 'FINDING_CATEGORY', 'CLASSIFICATION', 'TYPE', 'FINDING_TYPE'],
-            'MACRO_RISKS': ['MACRO_RISKS', 'RISKS', 'RISK_TYPES', 'RISK_CATEGORIES', 'MACRO_RISK', 'RISK_TAGS', 'TAGS', 'RISK_CLASSIFICATION']
+            'FINDING_TITLE': [
+                'FINDING_TITLE', 'TITLE', 'FINDING NAME', 'NAME', 'FINDING', 'SUMMARY', 'ISSUE_TITLE', 'ISSUE',
+                'OBSERVATION_TITLE', 'VULNERABILITY_TITLE', 'VULN_TITLE', 'HEADING', 'SUBJECT'
+            ],
+            'FINDING_DESCRIPTION': [
+                'FINDING_DESCRIPTION', 'DESCRIPTION', 'DESC', 'DETAILS', 'FINDING DETAILS', 'ISSUE_DESCRIPTION',
+                'DETAIL', 'OBSERVATION', 'OBSERVATION_DETAILS', 'VULNERABILITY_DESCRIPTION', 'VULN_DESCRIPTION',
+                'FINDING_DETAILS', 'NOTES', 'COMMENTS', 'CONTENT', 'BODY'
+            ],
+            'L2': [
+                'L2', 'L2_CATEGORY', 'CATEGORY', 'RISK_CATEGORY', 'FINDING_CATEGORY', 'CLASSIFICATION', 'TYPE',
+                'FINDING_TYPE', 'VULNERABILITY_TYPE', 'VULN_TYPE', 'RISK_TYPE', 'ISSUE_TYPE', 'SEVERITY',
+                'RISK_CLASSIFICATION', 'SECURITY_CLASSIFICATION'
+            ],
+            'MACRO_RISKS': [
+                'MACRO_RISKS', 'RISKS', 'RISK_TYPES', 'RISK_CATEGORIES', 'MACRO_RISK', 'RISK_TAGS', 'TAGS',
+                'RISK_CLASSIFICATION', 'THREAT_TYPES', 'THREAT_CATEGORIES', 'IMPACT_TYPES', 'VULNERABILITY_TAGS',
+                'SECURITY_TAGS', 'RISK_AREAS', 'RISK_DOMAINS'
+            ]
         }
+        
+        # Try to find additional text columns that might contain useful information
+        additional_text_columns = []
+        for col in raw_data.columns:
+            if col not in [item for sublist in column_mapping.values() for item in sublist]:
+                # Sample some values from the column
+                sample_values = raw_data[col].dropna().head(10)
+                # Check if column contains text data
+                if all(isinstance(val, str) and len(str(val)) > 10 for val in sample_values):
+                    additional_text_columns.append(col)
+        
+        if additional_text_columns:
+            print(f"\nFound additional text columns that might contain useful information: {additional_text_columns}")
         
         # Map columns to standard names
         mapped_columns = set()
@@ -528,43 +585,14 @@ def process_findings_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
                 print(f"- {col} (tried: {', '.join(column_mapping[col])})")
             print(f"Available columns: {', '.join(raw_data.columns)}")
         
-        required_columns = {'FINDING_TITLE', 'FINDING_DESCRIPTION', 'L2', 'MACRO_RISKS'}
-        if not all(col in raw_data.columns for col in required_columns):
-            missing = required_columns - set(raw_data.columns)
-            print(f"Warning: Missing required columns: {missing}")
-            print(f"Available columns: {', '.join(raw_data.columns)}")
-            return []
+        # Clean and normalize text data
+        for col in ['FINDING_TITLE', 'FINDING_DESCRIPTION']:
+            if col in raw_data.columns:
+                raw_data[col] = raw_data[col].apply(clean_text)
         
         # Get list of additional columns for metadata
-        metadata_columns = [col for col in raw_data.columns if col not in required_columns]
+        metadata_columns = [col for col in raw_data.columns if col not in set(column_mapping.keys())]
         print(f"Found additional columns that will be preserved in metadata: {metadata_columns}")
-        
-        # Pre-process L2 categories for better matching
-        l2_variations = {}
-        for key, value in L2.items():
-            # Original value
-            l2_variations[value.lower()] = (key, value)
-            
-            # Clean value (no special chars)
-            clean_value = re.sub(r'[^\w\s]', '', value.lower())
-            l2_variations[clean_value] = (key, value)
-            
-            # Abbreviated version
-            words = value.split()
-            if len(words) > 1:
-                abbrev = ''.join(word[0] for word in words).lower()
-                l2_variations[abbrev] = (key, value)
-                
-                # Also add first letters of significant words
-                significant_words = [w for w in words if len(w) > 3]
-                if significant_words:
-                    sig_abbrev = ''.join(word[0] for word in significant_words).lower()
-                    l2_variations[sig_abbrev] = (key, value)
-            
-            # Add individual words for partial matching
-            for word in words:
-                if len(word) > 3:  # Only significant words
-                    l2_variations[word.lower()] = (key, value)
         
         total_rows = len(raw_data)
         print(f"\nProcessing {total_rows} findings...")
@@ -582,17 +610,27 @@ def process_findings_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
                     if idx % 1000 == 0:
                         print(f"Progress: {idx}/{total_rows} rows processed")
                     
-                    # Skip if both title and description are empty
-                    if pd.isna(row['FINDING_TITLE']) and pd.isna(row['FINDING_DESCRIPTION']):
+                    # Build context from all available text fields
+                    context_parts = []
+                    
+                    # Add primary fields if they contain meaningful text
+                    if 'FINDING_TITLE' in row and is_meaningful_text(row['FINDING_TITLE']):
+                        context_parts.append(f"Finding: {row['FINDING_TITLE']}")
+                    
+                    if 'FINDING_DESCRIPTION' in row and is_meaningful_text(row['FINDING_DESCRIPTION']):
+                        context_parts.append(f"Description: {row['FINDING_DESCRIPTION']}")
+                    
+                    # If primary fields are empty, try additional text columns
+                    if not context_parts and additional_text_columns:
+                        for col in additional_text_columns:
+                            if is_meaningful_text(row[col]):
+                                context_parts.append(f"{col}: {clean_text(row[col])}")
+                    
+                    # Only skip if we have no usable text at all
+                    if not context_parts:
                         skipped_reasons['empty_data'] += 1
                         continue
                     
-                    # Create context from title and description
-                    context_parts = []
-                    if pd.notna(row['FINDING_TITLE']):
-                        context_parts.append(f"Finding: {row['FINDING_TITLE']}")
-                    if pd.notna(row['FINDING_DESCRIPTION']):
-                        context_parts.append(f"Description: {row['FINDING_DESCRIPTION']}")
                     context = "\n\n".join(context_parts)
                     
                     # Parse L2 category with improved matching
