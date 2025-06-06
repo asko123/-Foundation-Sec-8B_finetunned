@@ -353,24 +353,129 @@ def batch_analyze(model, tokenizer, unified: bool, categories: Dict, texts: List
     
     return results
 
+def read_input_file(file_path: str) -> List[str]:
+    """
+    Read texts from various file formats.
+    
+    Supports:
+    - Plain text files (one text per line)
+    - JSONL files (with 'text' field)
+    - JSON files (array of objects with 'text' field)
+    - CSV files (with header, looks for text/description/content columns)
+    - Excel files (.xlsx, .xls with text/description/content columns)
+    """
+    import pandas as pd
+    
+    file_ext = os.path.splitext(file_path)[1].lower()
+    texts = []
+    
+    try:
+        if file_ext == '.jsonl':
+            # Read JSONL file
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.strip():
+                        try:
+                            entry = json.loads(line)
+                            if isinstance(entry, dict):
+                                text = entry.get('text', entry.get('description', entry.get('content')))
+                                if text:
+                                    texts.append(text)
+                        except json.JSONDecodeError:
+                            print(f"Warning: Skipping invalid JSON line: {line[:100]}...")
+        
+        elif file_ext == '.json':
+            # Read JSON file
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    for entry in data:
+                        if isinstance(entry, dict):
+                            text = entry.get('text', entry.get('description', entry.get('content')))
+                            if text:
+                                texts.append(text)
+                elif isinstance(data, dict):
+                    text = data.get('text', data.get('description', data.get('content')))
+                    if text:
+                        texts.append(text)
+        
+        elif file_ext in ['.csv']:
+            # Read CSV file
+            df = pd.read_csv(file_path)
+            text_columns = [col for col in df.columns if any(term in col.lower() 
+                          for term in ['text', 'description', 'content', 'finding', 'detail'])]
+            
+            if text_columns:
+                primary_col = text_columns[0]
+                texts = [str(text) for text in df[primary_col].dropna()]
+                print(f"Using column '{primary_col}' from CSV file")
+            else:
+                print(f"Warning: No text column found in CSV. Available columns: {', '.join(df.columns)}")
+        
+        elif file_ext in ['.xlsx', '.xls']:
+            # Read Excel file
+            df = pd.read_excel(file_path)
+            text_columns = [col for col in df.columns if any(term in col.lower() 
+                          for term in ['text', 'description', 'content', 'finding', 'detail'])]
+            
+            if text_columns:
+                primary_col = text_columns[0]
+                texts = [str(text) for text in df[primary_col].dropna()]
+                print(f"Using column '{primary_col}' from Excel file")
+            else:
+                print(f"Warning: No text column found in Excel. Available columns: {', '.join(df.columns)}")
+        
+        else:
+            # Read as plain text file
+            with open(file_path, 'r', encoding='utf-8') as f:
+                texts = [line.strip() for line in f if line.strip()]
+    
+    except Exception as e:
+        print(f"Error reading file {file_path}: {str(e)}")
+        traceback.print_exc()
+        return []
+    
+    # Remove any empty texts and deduplicate
+    texts = list(set(text for text in texts if text.strip()))
+    return texts
+
 def main():
     """Main entry point for the script."""
     import argparse
     
-    parser = argparse.ArgumentParser(description="Use a fine-tuned model for unified risk and PII analysis")
+    parser = argparse.ArgumentParser(
+        description="Use a fine-tuned model for unified risk and PII analysis",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Analyze single text
+  python risk_inference.py --model model.pkl --text "your text here"
+  
+  # Analyze file (supports multiple formats)
+  python risk_inference.py --model model.pkl --file input.txt
+  python risk_inference.py --model model.pkl --file data.jsonl
+  python risk_inference.py --model model.pkl --file findings.csv
+  python risk_inference.py --model model.pkl --file data.xlsx
+  
+  # Save results to file
+  python risk_inference.py --model model.pkl --file input.txt --output results.json
+        """
+    )
+    
     parser.add_argument("--model", type=str, required=True, help="Path to the fine-tuned model pickle file")
     
     # Create options for text input
     parser.add_argument("--text", type=str, help="Text to analyze (for security risk or PII detection)")
-    parser.add_argument("--file", type=str, help="File containing texts to analyze (one per line)")
+    parser.add_argument("--file", type=str, help="File containing texts to analyze (supports txt, json, jsonl, csv, xlsx)")
     
     # For backward compatibility
-    parser.add_argument("--risk", type=str, help="Risk finding to categorize (same as --text)")
-    parser.add_argument("--risk_file", type=str, help="File containing risk findings (same as --file)")
-    parser.add_argument("--pii", type=str, help="Text to analyze for PII (same as --text)")
-    parser.add_argument("--pii_file", type=str, help="File containing texts to analyze for PII (same as --file)")
+    parser.add_argument("--risk", type=str, help=argparse.SUPPRESS)
+    parser.add_argument("--risk_file", type=str, help=argparse.SUPPRESS)
+    parser.add_argument("--pii", type=str, help=argparse.SUPPRESS)
+    parser.add_argument("--pii_file", type=str, help=argparse.SUPPRESS)
     
     parser.add_argument("--output", type=str, help="Path to save the results (JSON format)")
+    parser.add_argument("--batch-size", type=int, default=10, help="Number of texts to process before showing progress")
     
     args = parser.parse_args()
     
@@ -421,10 +526,9 @@ def main():
     # Process file with multiple texts
     if file_path:
         print(f"Processing file: {file_path}")
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                texts = [line.strip() for line in f if line.strip()]
-            
+        texts = read_input_file(file_path)
+        
+        if texts:
             print(f"Found {len(texts)} texts to process")
             batch_results = batch_analyze(model, tokenizer, unified, categories, texts)
             results.extend(batch_results)
@@ -440,15 +544,37 @@ def main():
             print(f"- Identified as containing PII: {pii_count}")
             print(f"- Successfully analyzed: {success_count}")
             
-        except Exception as e:
-            print(f"Error processing file: {str(e)}")
-            traceback.print_exc()
+            # Print sample results
+            print("\nSample Results:")
+            for i, result in enumerate(batch_results[:3]):
+                print(f"\nText {i+1}:")
+                print(f"Type: {result.get('type', 'Unknown')}")
+                if result.get('type') == 'risk':
+                    print(f"L2 Category: {result.get('l2_category', 'Not identified')}")
+                    print(f"Macro Risks: {', '.join(result.get('macro_risks', ['None']))}")
+                else:
+                    print(f"Protection Category: {result.get('pc_category', 'Not identified')}")
+                    print(f"PII Types: {', '.join(result.get('pii_types', ['None']))}")
+        else:
+            print("No valid texts found in the file")
     
     # Save results if output path is provided
     if args.output and results:
         try:
+            output_dir = os.path.dirname(args.output)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+                
             with open(args.output, 'w', encoding='utf-8') as f:
-                json.dump(results, f, indent=2)
+                json.dump({
+                    "metadata": {
+                        "total_texts": len(results),
+                        "risk_texts": sum(1 for r in results if r.get("type") == "risk"),
+                        "pii_texts": sum(1 for r in results if r.get("type") == "pii"),
+                        "successful_analyses": sum(1 for r in results if r.get("success", False))
+                    },
+                    "results": results
+                }, f, indent=2)
             print(f"Results saved to {args.output}")
         except Exception as e:
             print(f"Error saving results: {str(e)}")
