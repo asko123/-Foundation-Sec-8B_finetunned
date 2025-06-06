@@ -360,16 +360,94 @@ def process_folder_for_training_data(folder_path: str, output_dir: str = "traini
             print(f"Skipping unsupported file type: {file_ext}")
             continue
         
-        all_raw_data.extend(raw_data)
-        print(f"Extracted {len(raw_data)} entries from {os.path.basename(file_path)}")
+        if raw_data:
+            all_raw_data.extend(raw_data)
+            print(f"Extracted {len(raw_data)} entries from {os.path.basename(file_path)}")
+        else:
+            print(f"Warning: No data extracted from {os.path.basename(file_path)}")
     
     print(f"\nTotal raw data entries extracted: {len(all_raw_data)}")
+    
+    if not all_raw_data:
+        raise ValueError("No raw data could be extracted from any files")
     
     # Convert raw data to training examples
     training_examples = process_raw_data_to_training_examples(all_raw_data)
     
     if not training_examples:
-        raise ValueError("No training examples could be generated from the raw data")
+        # Create a backup file with the raw data for debugging
+        backup_file = os.path.join(output_dir, "raw_data_backup.jsonl")
+        with open(backup_file, 'w', encoding='utf-8') as f:
+            for entry in all_raw_data:
+                f.write(json.dumps(entry) + '\n')
+        print(f"\nWarning: No training examples could be generated. Raw data saved to: {backup_file}")
+        print("This might be due to:")
+        print("1. Missing or invalid L2 categories")
+        print("2. Missing or invalid macro risks")
+        print("3. Empty or invalid text content")
+        print("\nPlease check the raw data backup file for debugging.")
+        
+        # Try to generate at least partial examples
+        print("\nAttempting to generate partial examples...")
+        partial_examples = []
+        
+        for entry in all_raw_data:
+            try:
+                # Create basic example with available data
+                example = {
+                    "type": "risk",
+                    "text": "",
+                    "l2_category": "UNKNOWN",
+                    "macro_risks": ["UNSPECIFIED"],
+                    "metadata": {"source": "raw_data"}
+                }
+                
+                # Add text content
+                text_parts = []
+                if entry.get('Finding_Title'):
+                    text_parts.append(f"Finding: {entry['Finding_Title']}")
+                if entry.get('Finding_Description'):
+                    text_parts.append(f"Description: {entry['Finding_Description']}")
+                
+                # Try alternative field names
+                for key in entry:
+                    if 'title' in key.lower() and key not in ['Finding_Title']:
+                        text_parts.append(f"{key}: {entry[key]}")
+                    elif any(term in key.lower() for term in ['desc', 'detail', 'note', 'comment']):
+                        text_parts.append(f"{key}: {entry[key]}")
+                
+                if text_parts:
+                    example['text'] = "\n\n".join(text_parts)
+                    
+                    # Try to extract L2 category
+                    if entry.get('L2'):
+                        example['l2_category'] = entry['L2']
+                    elif entry.get('Category'):
+                        example['l2_category'] = entry['Category']
+                    
+                    # Try to extract macro risks
+                    if entry.get('macro_risks'):
+                        risks = entry['macro_risks']
+                        if isinstance(risks, list):
+                            example['macro_risks'] = risks
+                        elif isinstance(risks, str):
+                            example['macro_risks'] = [r.strip() for r in risks.split(',')]
+                    
+                    # Add all other fields as metadata
+                    for key, value in entry.items():
+                        if key not in ['Finding_Title', 'Finding_Description', 'L2', 'macro_risks']:
+                            example['metadata'][key] = value
+                    
+                    partial_examples.append(example)
+            except Exception as e:
+                print(f"Error processing entry: {str(e)}")
+                continue
+        
+        if partial_examples:
+            print(f"\nGenerated {len(partial_examples)} partial examples")
+            training_examples = partial_examples
+        else:
+            raise ValueError("Could not generate any training examples, even with relaxed requirements")
     
     # Save training examples to JSONL file
     training_file_path = os.path.join(output_dir, "auto_generated_training_data.jsonl")
@@ -389,13 +467,24 @@ def process_folder_for_training_data(folder_path: str, output_dir: str = "traini
         "risk_examples": len([ex for ex in training_examples if ex["type"] == "risk"]),
         "pii_examples": len([ex for ex in training_examples if ex["type"] == "pii"]),
         "processed_files": [os.path.basename(f) for f in files_to_process],
-        "extraction_timestamp": pd.Timestamp.now().isoformat()
+        "extraction_timestamp": pd.Timestamp.now().isoformat(),
+        "example_stats": {
+            "with_l2": len([ex for ex in training_examples if ex["l2_category"] != "UNKNOWN"]),
+            "with_risks": len([ex for ex in training_examples if ex["macro_risks"] != ["UNSPECIFIED"]]),
+            "complete": len([ex for ex in training_examples 
+                           if ex["l2_category"] != "UNKNOWN" and ex["macro_risks"] != ["UNSPECIFIED"]])
+        }
     }
     
     with open(summary_path, 'w', encoding='utf-8') as f:
         json.dump(summary, f, indent=2)
     
     print(f"Saved extraction summary to: {summary_path}")
+    print("\nExample statistics:")
+    print(f"- Total examples: {summary['total_training_examples']}")
+    print(f"- With L2 category: {summary['example_stats']['with_l2']}")
+    print(f"- With macro risks: {summary['example_stats']['with_risks']}")
+    print(f"- Complete examples: {summary['example_stats']['complete']}")
     
     return training_file_path
 
