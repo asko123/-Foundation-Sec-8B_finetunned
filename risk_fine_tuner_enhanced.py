@@ -27,6 +27,7 @@ from tqdm import tqdm
 import pandas as pd
 from rapidfuzz import fuzz, process, utils
 from collections import Counter
+import numpy as np
 
 # Import constants
 from risk_fine_tuner_constants import (
@@ -225,102 +226,140 @@ def analyze_content_for_pii(text: str) -> Tuple[str, List[str], float]:
 def process_raw_data_to_training_examples(raw_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Process raw data entries into training examples."""
     training_examples = []
+    debug_stats = {
+        'total_entries': len(raw_data),
+        'empty_entries': 0,
+        'processed_entries': 0,
+        'failed_entries': 0,
+        'field_stats': {
+            'title': 0,
+            'description': 0,
+            'l2': 0,
+            'risks': 0
+        }
+    }
     
-    for entry in raw_data:
-        # Skip empty entries
-        if not entry:
-            continue
-        
-        # Try to determine if this is a finding or PII data
-        text = ""
-        if 'Finding_Title' in entry and 'Finding_Description' in entry:
-            # This is a finding
-            text = f"Finding: {entry['Finding_Title']}\n\n"
-            if entry.get('Finding_Description'):
-                text += f"Description: {entry['Finding_Description']}"
+    print(f"\nStarting to process {len(raw_data)} raw data entries...")
+    
+    for idx, entry in enumerate(raw_data):
+        try:
+            if idx % 1000 == 0:
+                print(f"Processing entry {idx}/{len(raw_data)}")
             
-            # Use provided L2 and macro_risks if available
-            if entry.get('L2') and entry.get('macro_risks'):
-                example = {
-                    "type": "risk",
-                    "text": text,
-                    "l2_category": entry['L2'],
-                    "macro_risks": entry['macro_risks'] if isinstance(entry['macro_risks'], list) else [entry['macro_risks']],
-                    "metadata": {
-                        "source": "raw_data",
-                        "original_l2": entry['L2'],
-                        "original_risks": entry['macro_risks']
-                    }
-                }
+            # Skip completely empty entries
+            if not entry:
+                debug_stats['empty_entries'] += 1
+                continue
+            
+            # Debug print entry structure
+            if idx == 0:
+                print("\nFirst entry structure:")
+                for key, value in entry.items():
+                    print(f"  {key}: {type(value).__name__}")
+            
+            # Create basic example structure
+            example = {
+                "type": "risk",
+                "text": "",
+                "l2_category": "UNKNOWN",
+                "macro_risks": ["UNSPECIFIED"],
+                "metadata": {"source": "raw_data", "original_entry": entry}
+            }
+            
+            # Build text content from any available fields
+            text_parts = []
+            
+            # Try all possible title fields
+            title_fields = ['Finding_Title', 'Title', 'FINDING_TITLE', 'TITLE', 'Name', 'NAME', 'Summary', 'SUMMARY']
+            for field in title_fields:
+                if entry.get(field) and is_meaningful_text(entry[field]):
+                    text_parts.append(f"Finding: {clean_text(entry[field])}")
+                    debug_stats['field_stats']['title'] += 1
+                    break
+            
+            # Try all possible description fields
+            desc_fields = ['Finding_Description', 'Description', 'FINDING_DESCRIPTION', 'DESCRIPTION', 
+                         'Details', 'DETAILS', 'Content', 'CONTENT']
+            for field in desc_fields:
+                if entry.get(field) and is_meaningful_text(entry[field]):
+                    text_parts.append(f"Description: {clean_text(entry[field])}")
+                    debug_stats['field_stats']['description'] += 1
+                    break
+            
+            # Look for any other text fields
+            for key, value in entry.items():
+                if (isinstance(value, str) and 
+                    is_meaningful_text(value) and 
+                    key not in title_fields + desc_fields):
+                    text_parts.append(f"{key}: {clean_text(value)}")
+            
+            # Try to extract L2 category
+            l2_fields = ['L2', 'Category', 'Type', 'Classification', 'Risk_Category']
+            for field in l2_fields:
+                if entry.get(field):
+                    example['l2_category'] = str(entry[field])
+                    debug_stats['field_stats']['l2'] += 1
+                    break
+            
+            # Try to extract macro risks
+            risk_fields = ['macro_risks', 'Risks', 'Risk_Types', 'Categories']
+            for field in risk_fields:
+                if entry.get(field):
+                    risks = entry[field]
+                    if isinstance(risks, list):
+                        example['macro_risks'] = [str(r) for r in risks]
+                    elif isinstance(risks, str):
+                        # Try various delimiters
+                        for delimiter in [',', ';', '|', '\n']:
+                            if delimiter in risks:
+                                example['macro_risks'] = [r.strip() for r in risks.split(delimiter)]
+                                break
+                        if example['macro_risks'] == ["UNSPECIFIED"]:
+                            example['macro_risks'] = [risks.strip()]
+                    debug_stats['field_stats']['risks'] += 1
+                    break
+            
+            # Accept example if it has any meaningful content
+            if text_parts:
+                example['text'] = "\n\n".join(text_parts)
+                training_examples.append(example)
+                debug_stats['processed_entries'] += 1
             else:
-                # Analyze content to determine categories
-                l2_category, macro_risks, confidence = analyze_content_for_risk_category(text)
-                if confidence > 0.2:  # Only include if we have reasonable confidence
-                    example = {
-                        "type": "risk",
-                        "text": text,
-                        "l2_category": l2_category,
-                        "macro_risks": macro_risks,
-                        "metadata": {
-                            "source": "analyzed",
-                            "confidence": confidence
-                        }
-                    }
-                else:
-                    continue
-                    
-            training_examples.append(example)
-            
-        elif 'COLUMNNAME' in entry and 'PRIVACYTYPE' in entry:
-            # This is PII data
-            text = f"Database Column: {entry['COLUMNNAME']}\n"
-            if entry.get('ENTITYNAME'):
-                text += f"Entity: {entry['ENTITYNAME']}\n"
-            if entry.get('ENTITYDESC'):
-                text += f"Description: {entry['ENTITYDESC']}\n"
-            if entry.get('PRIVACYTYPEDESCRIPTION'):
-                text += f"Privacy Description: {entry['PRIVACYTYPEDESCRIPTION']}\n"
-            
-            # Use provided classification if available
-            if entry.get('PRIVACYTYPECLASSIFICATION'):
-                classification = str(entry['PRIVACYTYPECLASSIFICATION']).upper()
-                if "PUBLIC" in classification or "DP10" in classification:
-                    pc_category = "PC0"
-                elif any(level in classification for level in ["CONFIDENTIAL", "DP30", "HIGHLY RESTRICTED"]):
-                    pc_category = "PC3"
-                else:
-                    pc_category = "PC1"
+                debug_stats['failed_entries'] += 1
                 
-                example = {
-                    "type": "pii",
-                    "text": text,
-                    "pc_category": pc_category,
-                    "pii_types": [],  # Will be filled by analysis
-                    "metadata": {
-                        "source": "raw_data",
-                        "original_classification": entry['PRIVACYTYPECLASSIFICATION'],
-                        "privacy_type": entry.get('PRIVACYTYPE'),
-                        "privacy_name": entry.get('PRIVACYTYPENAME')
-                    }
-                }
-            else:
-                # Analyze content to determine PII
-                pc_category, pii_types, confidence = analyze_content_for_pii(text)
-                if confidence > 0.2:  # Only include if we have reasonable confidence
-                    example = {
-                        "type": "pii",
-                        "text": text,
-                        "pc_category": pc_category,
-                        "pii_types": pii_types,
-                        "metadata": {
-                            "source": "analyzed",
-                            "confidence": confidence
-                        }
-                    }
-                else:
-                    continue
-                    
-            training_examples.append(example)
+            # Debug print for first few failed entries
+            if not text_parts and debug_stats['failed_entries'] <= 5:
+                print(f"\nFailed to extract text from entry {idx}:")
+                print("Entry keys:", list(entry.keys()))
+                print("Entry values:", {k: str(v)[:100] + '...' if isinstance(v, str) and len(str(v)) > 100 else v 
+                                     for k, v in entry.items()})
+        
+        except Exception as e:
+            print(f"Error processing entry {idx}: {str(e)}")
+            debug_stats['failed_entries'] += 1
+            if debug_stats['failed_entries'] <= 5:
+                print("Entry:", entry)
+                traceback.print_exc()
+    
+    # Print debug statistics
+    print("\nProcessing Statistics:")
+    print(f"Total entries: {debug_stats['total_entries']}")
+    print(f"Empty entries: {debug_stats['empty_entries']}")
+    print(f"Successfully processed: {debug_stats['processed_entries']}")
+    print(f"Failed to process: {debug_stats['failed_entries']}")
+    print("\nField Statistics:")
+    print(f"Entries with title: {debug_stats['field_stats']['title']}")
+    print(f"Entries with description: {debug_stats['field_stats']['description']}")
+    print(f"Entries with L2 category: {debug_stats['field_stats']['l2']}")
+    print(f"Entries with risks: {debug_stats['field_stats']['risks']}")
+    
+    if not training_examples:
+        print("\nWARNING: No training examples were generated!")
+        print("Sample of raw data entries:")
+        for i, entry in enumerate(raw_data[:5]):
+            print(f"\nEntry {i + 1}:")
+            for key, value in entry.items():
+                print(f"  {key}: {str(value)[:100]}{'...' if isinstance(value, str) and len(str(value)) > 100 else ''}")
     
     return training_examples
 
@@ -930,52 +969,40 @@ def process_findings_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
     return training_examples
 
 def extract_text_from_excel(file_path: str) -> List[Dict[str, Any]]:
-    """
-    Extract text from Excel files, with special handling for findings data.
-    Supports both findings data (with Finding_Title, Finding_Description, etc.)
-    and privacy data (with COLUMNNAME, PRIVACYTYPE, etc.).
-    """
+    """Extract text from Excel files."""
     try:
         print(f"Reading Excel file: {file_path}")
         
         # Try to read all sheets
         all_sheets = pd.read_excel(file_path, sheet_name=None)
-        training_examples = []
+        print(f"Found {len(all_sheets)} sheets: {list(all_sheets.keys())}")
+        
+        all_data = []
         
         for sheet_name, df in all_sheets.items():
             print(f"\nProcessing sheet: {sheet_name}")
+            print(f"Sheet dimensions: {df.shape[0]} rows × {df.shape[1]} columns")
+            print("Columns:", list(df.columns))
             
-            # Clean column names
-            df.columns = [str(col).strip().upper() for col in df.columns]
+            # Sample first row
+            if not df.empty:
+                print("\nFirst row sample:")
+                first_row = df.iloc[0].to_dict()
+                for col, val in first_row.items():
+                    print(f"  {col}: {str(val)[:100]}{'...' if isinstance(val, str) and len(str(val)) > 100 else ''}")
             
-            # Check if this is findings data
-            if 'FINDING_TITLE' in df.columns:
-                print(f"Found findings data in sheet {sheet_name}")
-                training_examples.extend(process_findings_data(df))
-                continue
+            # Convert DataFrame to list of dictionaries
+            sheet_data = df.replace({np.nan: None}).to_dict('records')
             
-            # Check if this is privacy data
-            if 'COLUMNNAME' in df.columns:
-                print(f"Found privacy data in sheet {sheet_name}")
-                training_examples.extend(process_privacy_data(df))
-                continue
+            # Add sheet name to metadata
+            for record in sheet_data:
+                record['_sheet_name'] = sheet_name
             
-            print(f"Warning: Unknown data format in sheet {sheet_name}")
-            print(f"Available columns: {', '.join(df.columns)}")
-            print("Expected either:")
-            print("- Findings data columns: FINDING_TITLE, FINDING_DESCRIPTION, L2, MACRO_RISKS")
-            print("- Privacy data columns: COLUMNNAME, PRIVACYTYPE, PRIVACYTYPENAME")
+            all_data.extend(sheet_data)
+            print(f"Added {len(sheet_data)} records from sheet {sheet_name}")
         
-        if not training_examples:
-            print(f"Warning: No valid training examples found in {file_path}")
-        else:
-            print(f"\nExtracted {len(training_examples)} training examples from {file_path}")
-            risk_count = sum(1 for ex in training_examples if ex["type"] == "risk")
-            pii_count = sum(1 for ex in training_examples if ex["type"] == "pii")
-            print(f"- Risk examples: {risk_count}")
-            print(f"- PII examples: {pii_count}")
-        
-        return training_examples
+        print(f"\nTotal records extracted: {len(all_data)}")
+        return all_data
             
     except Exception as e:
         print(f"Error processing Excel file {file_path}: {str(e)}")
@@ -983,16 +1010,12 @@ def extract_text_from_excel(file_path: str) -> List[Dict[str, Any]]:
         return []
 
 def extract_text_from_csv(file_path: str) -> List[Dict[str, Any]]:
-    """
-    Extract text from CSV files, with special handling for findings data.
-    Supports both findings data (with Finding_Title, Finding_Description, etc.)
-    and privacy data (with COLUMNNAME, PRIVACYTYPE, etc.).
-    """
+    """Extract text from CSV files."""
     try:
         print(f"Reading CSV file: {file_path}")
         
-        # Try to read with different encodings
-        encodings = ['utf-8', 'latin1', 'iso-8859-1']
+        # Try different encodings
+        encodings = ['utf-8', 'latin1', 'iso-8859-1', 'cp1252']
         df = None
         
         for encoding in encodings:
@@ -1006,25 +1029,20 @@ def extract_text_from_csv(file_path: str) -> List[Dict[str, Any]]:
         if df is None:
             raise ValueError(f"Could not read CSV file with any of the attempted encodings: {encodings}")
         
-        # Clean column names
-        df.columns = [str(col).strip().upper() for col in df.columns]
+        print(f"File dimensions: {df.shape[0]} rows × {df.shape[1]} columns")
+        print("Columns:", list(df.columns))
         
-        # Check if this is findings data
-        if 'FINDING_TITLE' in df.columns:
-            print("Found findings data")
-            return process_findings_data(df)
+        # Sample first row
+        if not df.empty:
+            print("\nFirst row sample:")
+            first_row = df.iloc[0].to_dict()
+            for col, val in first_row.items():
+                print(f"  {col}: {str(val)[:100]}{'...' if isinstance(val, str) and len(str(val)) > 100 else ''}")
         
-        # Check if this is privacy data
-        if 'COLUMNNAME' in df.columns:
-            print("Found privacy data")
-            return process_privacy_data(df)
-        
-        print("Warning: Unknown data format")
-        print(f"Available columns: {', '.join(df.columns)}")
-        print("Expected either:")
-        print("- Findings data columns: FINDING_TITLE, FINDING_DESCRIPTION, L2, MACRO_RISKS")
-        print("- Privacy data columns: COLUMNNAME, PRIVACYTYPE, PRIVACYTYPENAME")
-        return []
+        # Convert DataFrame to list of dictionaries
+        data = df.replace({np.nan: None}).to_dict('records')
+        print(f"Total records extracted: {len(data)}")
+        return data
             
     except Exception as e:
         print(f"Error processing CSV file {file_path}: {str(e)}")
