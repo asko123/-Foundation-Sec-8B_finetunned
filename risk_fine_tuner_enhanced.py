@@ -25,7 +25,7 @@ import re
 from typing import List, Dict, Any, Optional, Tuple, Union
 from tqdm import tqdm
 import pandas as pd
-from Levenshtein import ratio  # For better string matching
+from rapidfuzz import fuzz
 
 # Import constants
 from risk_fine_tuner_constants import (
@@ -51,6 +51,41 @@ def scan_folder_for_files(folder_path: str) -> List[str]:
     
     return files_to_process
 
+def calculate_string_similarity(str1: str, str2: str) -> float:
+    """
+    Calculate string similarity using a combination of methods:
+    1. Exact match
+    2. Contains check
+    3. Token set ratio (handles word reordering)
+    4. Partial ratio (handles substrings)
+    
+    Args:
+        str1: First string to compare
+        str2: Second string to compare
+        
+    Returns:
+        Similarity score between 0 and 1
+    """
+    str1_lower = str1.lower()
+    str2_lower = str2.lower()
+    
+    # Exact match
+    if str1_lower == str2_lower:
+        return 1.0
+        
+    # Contains check
+    if str1_lower in str2_lower or str2_lower in str1_lower:
+        return 0.9
+    
+    # Token set ratio (handles word reordering)
+    token_score = fuzz.token_set_ratio(str1_lower, str2_lower) / 100.0
+    
+    # Partial ratio (handles substrings)
+    partial_score = fuzz.partial_ratio(str1_lower, str2_lower) / 100.0
+    
+    # Return the maximum of the two scores
+    return max(token_score, partial_score)
+
 def analyze_content_for_risk_category(text: str) -> Tuple[str, List[str], float]:
     """
     Analyze text content to identify L2 category and macro risks using improved matching.
@@ -68,25 +103,13 @@ def analyze_content_for_risk_category(text: str) -> Tuple[str, List[str], float]
     best_l2_score = 0
     identified_risks = set()
     
-    # Function to find best match using Levenshtein distance
+    # Function to find best match
     def find_best_match(text: str, candidates: Dict[str, str], threshold: float = 0.85) -> Tuple[Optional[str], float]:
         best_match = None
         best_score = 0
-        text_lower = text.lower()
         
         for key, value in candidates.items():
-            value_lower = value.lower()
-            
-            # Try exact match first
-            if text_lower == value_lower:
-                return f"{key}. {value}", 1.0
-            
-            # Try contains match
-            if text_lower in value_lower or value_lower in text_lower:
-                score = 0.9  # High score for contains match
-            else:
-                # Use Levenshtein distance for fuzzy match
-                score = ratio(text_lower, value_lower)
+            score = calculate_string_similarity(text, value)
             
             if score > best_score and score >= threshold:
                 best_score = score
@@ -105,21 +128,9 @@ def analyze_content_for_risk_category(text: str) -> Tuple[str, List[str], float]
         def find_best_risk_match(text: str, risks: List[str], threshold: float = 0.85) -> Optional[str]:
             best_match = None
             best_score = 0
-            text_lower = text.lower()
             
             for risk in risks:
-                risk_lower = risk.lower()
-                
-                # Try exact match first
-                if text_lower == risk_lower:
-                    return risk
-                
-                # Try contains match
-                if text_lower in risk_lower or risk_lower in text_lower:
-                    score = 0.9  # High score for contains match
-                else:
-                    # Use Levenshtein distance for fuzzy match
-                    score = ratio(text_lower, risk_lower)
+                score = calculate_string_similarity(text, risk)
                 
                 if score > best_score and score >= threshold:
                     best_score = score
@@ -744,23 +755,13 @@ def process_privacy_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
                 privacy_type = str(row['PRIVACYTYPE']).strip()
                 privacy_name = str(row.get('PRIVACYTYPENAME', '')).strip()
                 
-                # Function to find best match using Levenshtein distance
+                # Function to find best match
                 def find_best_match(text: str, candidates: List[str], threshold: float = 0.85) -> Optional[str]:
                     best_match = None
                     best_score = 0
-                    text_lower = text.lower()
                     
                     for candidate in candidates:
-                        # Try exact match first
-                        if text_lower == candidate.lower():
-                            return candidate
-                        
-                        # Try contains match
-                        if text_lower in candidate.lower() or candidate.lower() in text_lower:
-                            score = 0.9  # High score for contains match
-                        else:
-                            # Use Levenshtein distance for fuzzy match
-                            score = ratio(text_lower, candidate.lower())
+                        score = calculate_string_similarity(text, candidate)
                         
                         if score > best_score and score >= threshold:
                             best_score = score
@@ -780,7 +781,7 @@ def process_privacy_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
                 if pd.notna(row.get('PRIVACYTYPEDESCRIPTION')):
                     desc = str(row['PRIVACYTYPEDESCRIPTION'])
                     for pii_type in PII_TYPES:
-                        if pii_type.lower() in desc.lower():
+                        if calculate_string_similarity(pii_type, desc) > 0.85:
                             pii_types.add(pii_type)
                 
                 # If no PII types found through matching, analyze the text
