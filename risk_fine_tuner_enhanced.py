@@ -171,7 +171,7 @@ def analyze_content_for_risk_category(text: str) -> Tuple[str, List[str], float]
                 identified_risks.add(risk)
                 print(f"Matched risk: '{risk}' (confidence: {score/100:.2f})")
     
-    return best_l2, list(identified_risks), best_l2_score
+    return best_l2, list(identified_risks), float(best_l2_score)
 
 def analyze_content_for_pii(text: str) -> Tuple[str, List[str], float]:
     """
@@ -540,6 +540,15 @@ def process_findings_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
         'invalid_format': 0
     }
     
+    l2_variations = {}
+    for key, value in L2.items():
+        l2_variations[value.lower()] = (key, value)
+        l2_variations[key] = (key, value)
+        # Add common variations
+        for word in value.lower().split():
+            if len(word) > 3:  # Only meaningful words
+                l2_variations[word] = (key, value)
+    
     try:
         # Clean column names and handle variations
         raw_data.columns = [str(col).strip().upper() for col in raw_data.columns]
@@ -621,8 +630,9 @@ def process_findings_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
             
             for idx, row in batch.iterrows():
                 try:
-                    if idx % 1000 == 0:
-                        print(f"Progress: {idx}/{total_rows} rows processed")
+                    row_num = idx if isinstance(idx, int) else hash(idx) % 1000000
+                    if (row_num - start_idx) % 1000 == 0:
+                        print(f"Progress: {row_num}/{total_rows} rows processed")
                     
                     # Build context from all available text fields
                     context_parts = []
@@ -637,8 +647,8 @@ def process_findings_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
                     # If primary fields are empty, try additional text columns
                     if not context_parts and additional_text_columns:
                         for col in additional_text_columns:
-                            if is_meaningful_text(row[col]):
-                                context_parts.append(f"{col}: {clean_text(row[col])}")
+                            if is_meaningful_text(str(row[col])):
+                                context_parts.append(f"{col}: {clean_text(str(row[col]))}")
                     
                     # Only skip if we have no usable text at all
                     if not context_parts:
@@ -686,7 +696,7 @@ def process_findings_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
                                         if value == matched_value:
                                             l2_category = f"{key}. {value}"
                                             print(f"Fuzzy matched L2: '{l2_value}' -> '{value}' (score: {matches[0][1]})")
-                            break
+                                            break
                     
                     # Parse macro risks with improved handling
                     macro_risks = set()
@@ -1089,4 +1099,4 @@ def main():
         return 1
 
 if __name__ == "__main__":
-    main() 
+    main()    

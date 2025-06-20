@@ -510,7 +510,7 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
             print("Loading base model: fdtn-ai/Foundation-Sec-8B")
             
             # Set up device and get training parameters
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            device, bs, ga_steps = setup_device()
             if device == "cuda":
                 print(f"Using GPU: {torch.cuda.get_device_name(0)}")
             else:
@@ -873,7 +873,7 @@ def process_findings_data(raw_data: pd.DataFrame) -> List[Dict[str, Any]]:
                             break
                     
                     # If no exact match, try fuzzy match
-                    if not any(risk in macro_risks):
+                    if not any(risk in macro_risk for macro_risk in macro_risks):
                         for themes in MACRO_RISKS.values():
                             for theme in themes:
                                 if risk in theme or theme in risk:
@@ -986,4 +986,4 @@ def extract_text_from_csv(file_path: str) -> List[Dict[str, Any]]:
         return []
 
 if __name__ == "__main__":
-    sys.exit(main()) 
+    sys.exit(main())  

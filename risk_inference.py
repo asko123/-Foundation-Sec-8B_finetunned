@@ -220,6 +220,8 @@ def detect_text_type(model, tokenizer, categories: Dict, text: str) -> str:
 def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
     """Analyze text as a security risk finding."""
     try:
+        import torch
+        
         # Format the categories
         categories_text = format_all_categories_for_prompt(categories)
         
@@ -592,4 +594,4 @@ Examples:
             traceback.print_exc()
 
 if __name__ == "__main__":
-    main() 
+    main()  
