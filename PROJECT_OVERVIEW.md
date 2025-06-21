@@ -160,12 +160,35 @@ output_directory/
 4. **Optional fine-tuning**: `python risk_fine_tuner.py --training-data training_data/auto_generated_training_data.jsonl`
 5. **Optional inference**: `python risk_inference.py --model model.pkl --input "test text"`
 
+## 🧪 **Testing**
+
+### **Test Commands**
+```bash
+# Lightweight tests (tests core functionality without loading the full model)
+python test_lightweight.py
+
+# 8-bit quantization tests (validates quantization implementation)
+python test_8bit_quantization.py
+
+# Full integration test (requires ~15GB RAM for the full model)
+python test_integration.py
+```
+
+### **Test Results**
+- **Lightweight tests**: 4/4 tests pass ✅
+- **Quantization tests**: 5/5 tests pass ✅
+- **Integration test**: Limited by memory constraints in some environments
+
+Make sure you're in the repo directory and have the virtual environment activated with `source .venv/bin/activate` before running tests.
+
 ## 🔧 **Linux Users**
 
 Replace `python` with `./run_python_fixed.sh` in all commands:
 ```bash
 ./run_python_fixed.sh run_enhanced_fine_tuner.py --folder /your/data
 ./run_python_fixed.sh risk_fine_tuner.py --training-data training_data/auto_generated_training_data.jsonl
+./run_python_fixed.sh test_lightweight.py
+./run_python_fixed.sh test_8bit_quantization.py
 ```
 
 ## 📊 **What This System Does**
@@ -178,4 +201,4 @@ Replace `python` with `./run_python_fixed.sh` in all commands:
 ✅ **Fine-tunes models** for your specific data  
 ✅ **Handles Linux environment issues** automatically  
 
-**Perfect for**: Security audits, risk assessments, compliance reports, vulnerability scans 
+**Perfect for**: Security audits, risk assessments, compliance reports, vulnerability scans  
