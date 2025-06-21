@@ -369,11 +369,29 @@ def setup_device():
     
     # Get VRAM info for the selected device
     vram_mb = torch.cuda.get_device_properties(0).total_memory / (1024 * 1024)
-    print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+    gpu_name = torch.cuda.get_device_name(0)
+    print(f"Using GPU: {gpu_name}")
     print(f"Available VRAM: {vram_mb:.2f} MB")
     
-    # Adjust batch size based on VRAM
-    if vram_mb < 16000:  # Less than 16GB
+    # Optimize batch size based on VRAM and GPU architecture
+    if "H100" in gpu_name.upper():
+        print("🚀 H100 GPU detected - using optimized configuration")
+        bs = 8  # H100 can handle much larger batches
+        ga_steps = 2
+        print("H100 optimization: Large batch size with BF16 precision")
+    elif vram_mb > 70000:  # >70GB (A100 80GB, H100 80GB)
+        bs = 6
+        ga_steps = 2
+        print("High VRAM GPU detected, using large batch size")
+    elif vram_mb > 40000:  # >40GB (A100 40GB, RTX 6000 Ada)
+        bs = 4
+        ga_steps = 2
+        print("Mid-high VRAM GPU detected, using medium-large batch size")
+    elif vram_mb > 20000:  # >20GB (RTX 4090, RTX 3090 Ti)
+        bs = 2
+        ga_steps = 4
+        print("Mid VRAM GPU detected, using medium batch size")
+    elif vram_mb < 16000:  # Less than 16GB
         bs = 1
         ga_steps = 8
         print("Limited VRAM detected, using smaller batch size")
@@ -510,19 +528,19 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
             print("Loading base model: fdtn-ai/Foundation-Sec-8B")
             
             # Set up device and get training parameters
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            if device == "cuda":
-                print(f"Using GPU: {torch.cuda.get_device_name(0)}")
-            else:
-                print("Using CPU for inference")
+            device, bs, ga_steps = setup_device()
             
             # Clean up memory before loading model
             cleanup_memory()
             
+            # Detect if H100 for BF16 optimization
+            gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else ""
+            use_bf16 = "H100" in gpu_name.upper()
+            
             # Load model with explicit device mapping and 8-bit quantization
             model_kwargs = {
                 "load_in_8bit": True if device == "cuda" else False,
-                "torch_dtype": torch.float16 if device == "cuda" else torch.float32,
+                "torch_dtype": torch.bfloat16 if use_bf16 else (torch.float16 if device == "cuda" else torch.float32),
                 "device_map": "auto" if device == "cuda" else None
             }
             
@@ -551,10 +569,21 @@ Assistant: {{ message['content'] }}
 Assistant: '''
 
             # Configure LoRA for parameter-efficient fine-tuning
+            # Optimize LoRA config for H100 if detected
+            if use_bf16:  # H100 with BF16
+                lora_r = 32  # Higher rank for better performance on H100
+                lora_alpha = 64
+                lora_dropout = 0.1
+                print("Using H100-optimized LoRA configuration (higher rank)")
+            else:
+                lora_r = 16
+                lora_alpha = 32
+                lora_dropout = 0.05
+            
             lora_config = LoraConfig(
-                r=16,
-                lora_alpha=32,
-                lora_dropout=0.05,
+                r=lora_r,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
                 bias="none",
                 task_type="CAUSAL_LM",
                 target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
@@ -568,15 +597,14 @@ Assistant: '''
             train_dataset = load_dataset('json', data_files=train_file, split='train')
             eval_dataset = load_dataset('json', data_files=eval_file, split='train')
             
-            # Calculate training steps
+            # Calculate training steps (bs and ga_steps already set by setup_device)
             num_epochs = 3
-            bs = 1  # batch size
-            ga_steps = 4  # gradient accumulation steps
             total_steps = len(train_dataset) * num_epochs // (bs * ga_steps)
             eval_steps = max(100, total_steps // 10)
             save_steps = max(200, total_steps // 5)
             
             print(f"Training for {num_epochs} epochs with {total_steps} total steps")
+            print(f"Using batch_size={bs}, gradient_accumulation_steps={ga_steps}")
             
             # Create a data formatting function closure with device access
             def format_chat_wrapper(example):
@@ -615,7 +643,8 @@ Assistant: '''
                     eval_strategy="steps",
                     save_strategy="steps",
                     load_best_model_at_end=True,
-                    fp16=True if device == "cuda" else False,
+                    bf16=use_bf16,  # Use BF16 for H100, FP16 for others
+                    fp16=True if device == "cuda" and not use_bf16 else False,
                     report_to="none",
                     save_total_limit=3,
                     logging_first_step=True,
@@ -624,7 +653,11 @@ Assistant: '''
                     max_grad_norm=1.0,
                     no_cuda=device == "cpu",
                     local_rank=-1,  # Disable distributed training
-                    ddp_find_unused_parameters=False
+                    ddp_find_unused_parameters=False,
+                    # H100 optimizations
+                    dataloader_pin_memory=True if device == "cuda" else False,
+                    group_by_length=True,  # Improve efficiency for variable length sequences
+                    length_column_name="length" if device == "cuda" else None
                 ),
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
