@@ -523,7 +523,7 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
             model_kwargs = {
                 "load_in_8bit": True if device == "cuda" else False,
                 "torch_dtype": torch.float16 if device == "cuda" else torch.float32,
-                "device_map": "auto"
+                "device_map": "auto" if device == "cuda" else None
             }
             
             model = AutoModelForCausalLM.from_pretrained(
@@ -570,6 +570,8 @@ Assistant: '''
             
             # Calculate training steps
             num_epochs = 3
+            bs = 1  # batch size
+            ga_steps = 4  # gradient accumulation steps
             total_steps = len(train_dataset) * num_epochs // (bs * ga_steps)
             eval_steps = max(100, total_steps // 10)
             save_steps = max(200, total_steps // 5)
@@ -610,7 +612,7 @@ Assistant: '''
                     logging_steps=10,
                     eval_steps=eval_steps,
                     save_steps=save_steps,
-                    evaluation_strategy="steps",
+                    eval_strategy="steps",
                     save_strategy="steps",
                     load_best_model_at_end=True,
                     fp16=True if device == "cuda" else False,
@@ -986,4 +988,4 @@ def extract_text_from_csv(file_path: str) -> List[Dict[str, Any]]:
         return []
 
 if __name__ == "__main__":
-    sys.exit(main()) 
+    sys.exit(main())      
