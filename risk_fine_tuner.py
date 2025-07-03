@@ -348,6 +348,18 @@ def cleanup_memory():
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        torch.cuda.ipc_collect()
+
+def print_memory_usage(stage=""):
+    """Print current GPU memory usage."""
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024**3
+        reserved = torch.cuda.memory_reserved() / 1024**3
+        total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        print(f"[{stage}] GPU Memory - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB, Total: {total:.2f}GB")
+    else:
+        print(f"[{stage}] Using CPU - no GPU memory tracking")
         
 def setup_device():
     """Set up and return the appropriate device for training."""
@@ -541,13 +553,15 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
             model_kwargs = {
                 "load_in_8bit": True if device == "cuda" else False,
                 "torch_dtype": torch.bfloat16 if use_bf16 else (torch.float16 if device == "cuda" else torch.float32),
-                "device_map": "auto" if device == "cuda" else None
+                "device_map": "auto" if device == "cuda" else None,
+                "low_cpu_mem_usage": True
             }
             
             model = AutoModelForCausalLM.from_pretrained(
                 "fdtn-ai/Foundation-Sec-8B",
                 **model_kwargs
             )
+            print_memory_usage("after_model_loading")
             
             if device == "cuda":
                 model = prepare_model_for_kbit_training(model)
@@ -569,29 +583,19 @@ Assistant: {{ message['content'] }}
 Assistant: '''
 
             # Configure LoRA for parameter-efficient fine-tuning
-            # Optimize LoRA config for H100 if detected
-            if use_bf16:  # H100 with BF16
-                lora_r = 32  # Higher rank for better performance on H100
-                lora_alpha = 64
-                lora_dropout = 0.1
-                print("Using H100-optimized LoRA configuration (higher rank)")
-            else:
-                lora_r = 16
-                lora_alpha = 32
-                lora_dropout = 0.05
-            
             lora_config = LoraConfig(
-                r=lora_r,
-                lora_alpha=lora_alpha,
-                lora_dropout=lora_dropout,
+                r=8,  # Reduced from 16 for memory efficiency
+                lora_alpha=16,  # Reduced proportionally
+                lora_dropout=0.05,
                 bias="none",
                 task_type="CAUSAL_LM",
-                target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+                target_modules=["q_proj", "v_proj", "k_proj", "o_proj"]  # Reduced target modules
             )
             
             # Apply LoRA
             model = get_peft_model(model, lora_config)
             model.print_trainable_parameters()
+            print_memory_usage("after_lora_application")
             
             # Load datasets
             train_dataset = load_dataset('json', data_files=train_file, split='train')
@@ -605,6 +609,7 @@ Assistant: '''
             
             print(f"Training for {num_epochs} epochs with {total_steps} total steps")
             print(f"Using batch_size={bs}, gradient_accumulation_steps={ga_steps}")
+            print_memory_usage("before_dataset_processing")
             
             # Create a data formatting function closure with device access
             def format_chat_wrapper(example):
@@ -623,6 +628,7 @@ Assistant: '''
                 remove_columns=["messages"],
                 load_from_cache_file=False
             )
+            print_memory_usage("after_dataset_processing")
             
             # Initialize trainer
             trainer = Trainer(
@@ -645,19 +651,18 @@ Assistant: '''
                     load_best_model_at_end=True,
                     bf16=use_bf16,  # Use BF16 for H100, FP16 for others
                     fp16=True if device == "cuda" and not use_bf16 else False,
+                    gradient_checkpointing=True if device == "cuda" else False,
                     report_to="none",
                     save_total_limit=3,
                     logging_first_step=True,
-                    dataloader_num_workers=4 if device == "cuda" else 0,
+                    dataloader_num_workers=0,  # Reduce from 4 to save memory
+                    dataloader_pin_memory=False,  # Disable pin memory to save GPU memory
                     dataloader_drop_last=True,
                     max_grad_norm=1.0,
                     no_cuda=device == "cpu",
                     local_rank=-1,  # Disable distributed training
                     ddp_find_unused_parameters=False,
-                    # H100 optimizations
-                    dataloader_pin_memory=True if device == "cuda" else False,
-                    group_by_length=True,  # Improve efficiency for variable length sequences
-                    length_column_name="length" if device == "cuda" else None
+                    remove_unused_columns=False  # Prevent extra memory usage during preprocessing
                 ),
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
@@ -666,6 +671,7 @@ Assistant: '''
             
             # Start training
             print("Starting training...")
+            print_memory_usage("before_training_start")
             trainer.train()
             
             # Save the final model
@@ -1021,4 +1027,4 @@ def extract_text_from_csv(file_path: str) -> List[Dict[str, Any]]:
         return []
 
 if __name__ == "__main__":
-    sys.exit(main())      
+    sys.exit(main())                                    
