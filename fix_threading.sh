@@ -20,7 +20,7 @@ export NPY_NUM_BUILD_JOBS=1
 
 # PyTorch specific threading
 export TORCH_NUM_THREADS=1
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "Environment variables set:"
 echo "  LD_LIBRARY_PATH includes conda libraries"
@@ -35,4 +35,4 @@ python -c "import numpy as np; print('NumPy OK:', np.__version__)"
 echo ""
 echo "Environment ready! Run your scripts with:"
 echo "  python risk_fine_tuner.py"
-echo "  python risk_inference.py" 
+echo "  python risk_inference.py"  
