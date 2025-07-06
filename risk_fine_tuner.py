@@ -839,7 +839,7 @@ Assistant: '''
                 hub_strategy="every_save",
                 hub_token=None,
                 # Evaluation settings
-                evaluation_strategy="steps" if eval_batch_size > 0 else "no",
+                eval_strategy="steps" if eval_batch_size > 0 else "no",
                 eval_delay=0,
                 eval_accumulation_steps=None,
                 # Memory-specific optimizations
