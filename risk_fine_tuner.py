@@ -795,7 +795,6 @@ Assistant: '''
                 logging_steps=20,  # Reduce logging frequency to save memory
                 eval_steps=eval_steps,
                 save_steps=save_steps,
-                eval_strategy="steps",
                 save_strategy="steps",
                 load_best_model_at_end=False if vram_gb < 8 else True,  # Disable for ultra-low memory
                 metric_for_best_model=None,  # Disable metric tracking to save memory
