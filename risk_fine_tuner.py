@@ -9,8 +9,11 @@ This script handles simultaneously training the model for:
 Enhanced to automatically process raw Excel/CSV files from a folder.
 """
 
-# Standard library imports
+# Set PyTorch memory allocation configuration before importing torch
 import os
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
+# Standard library imports
 import json
 import csv
 import random
@@ -343,13 +346,67 @@ def process_batch(examples: List[Dict[str, Any]], file_handle) -> None:
         print(f"Error in batch processing: {str(e)}")
         traceback.print_exc()
 
-def cleanup_memory():
+def cleanup_memory(aggressive=False):
     """Clean up memory to prevent leaks."""
-    gc.collect()
+    import gc
+    import torch
+    
+    # Standard cleanup
+    for _ in range(3):
+        gc.collect()
+    
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
         torch.cuda.ipc_collect()
+        
+        if aggressive:
+            # Aggressive cleanup for low-memory environments
+            for _ in range(5):
+                gc.collect()
+                torch.cuda.empty_cache()
+            
+            # Reset memory stats
+            if hasattr(torch.cuda, 'reset_peak_memory_stats'):
+                torch.cuda.reset_peak_memory_stats()
+            
+            # Force memory defragmentation
+            try:
+                torch.cuda.memory._record_memory_history(enabled=False)
+            except:
+                pass
+            
+            print("[CLEANUP] Aggressive memory cleanup completed")
+        
+        # Optional memory summary
+        if hasattr(torch.cuda, 'memory_summary'):
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"[MEMORY] GPU: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+
+def low_memory_training_callback(trainer, logs):
+    """Callback for aggressive memory cleanup during training in low-memory environments."""
+    vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3) if torch.cuda.is_available() else 0
+    
+    # Clean up memory more frequently for low-memory GPUs
+    if vram_gb < 12:
+        cleanup_memory(aggressive=True)
+        
+        # Force garbage collection
+        import gc
+        gc.collect()
+        
+        # Check memory usage and warn if getting close to limit
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            total = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            usage_percent = (allocated / total) * 100
+            
+            if usage_percent > 85:
+                print(f"[WARNING] High GPU memory usage: {usage_percent:.1f}% ({allocated:.2f}/{total:.2f}GB)")
+                # Additional emergency cleanup
+                torch.cuda.empty_cache()
+                gc.collect()
 
 def print_memory_usage(stage=""):
     """Print current GPU memory usage."""
@@ -385,31 +442,34 @@ def setup_device():
     print(f"Using GPU: {gpu_name}")
     print(f"Available VRAM: {vram_mb:.2f} MB")
     
-    # Optimize batch size based on VRAM and GPU architecture
-    if "H100" in gpu_name.upper():
-        print("🚀 H100 GPU detected - using optimized configuration")
-        bs = 8  # H100 can handle much larger batches
-        ga_steps = 2
-        print("H100 optimization: Large batch size with BF16 precision")
-    elif vram_mb > 70000:  # >70GB (A100 80GB, H100 80GB)
-        bs = 6
-        ga_steps = 2
-        print("High VRAM GPU detected, using large batch size")
-    elif vram_mb > 40000:  # >40GB (A100 40GB, RTX 6000 Ada)
-        bs = 4
-        ga_steps = 2
-        print("Mid-high VRAM GPU detected, using medium-large batch size")
-    elif vram_mb > 20000:  # >20GB (RTX 4090, RTX 3090 Ti)
-        bs = 2
-        ga_steps = 4
-        print("Mid VRAM GPU detected, using medium batch size")
-    elif vram_mb < 16000:  # Less than 16GB
+    # Ultra-low memory settings for CUDA environments
+    print("[CONFIG] Using ultra-low memory settings optimized for low-memory CUDA")
+    
+    # Categorize GPU memory and set ultra-conservative settings
+    if vram_mb < 8000:  # <8GB (RTX 3060, GTX 1070, etc.)
         bs = 1
-        ga_steps = 8
-        print("Limited VRAM detected, using smaller batch size")
-    else:
-        bs = 2
-        ga_steps = 4
+        ga_steps = 64  # Very high gradient accumulation
+        print(f"[WARNING] Low VRAM GPU detected ({vram_mb:.0f}MB) - using extreme memory conservation")
+    elif vram_mb < 12000:  # 8-12GB (RTX 3070, RTX 4060 Ti, etc.)
+        bs = 1
+        ga_steps = 48
+        print(f"[CONFIG] Mid-low VRAM GPU detected ({vram_mb:.0f}MB) - using high memory conservation")
+    elif vram_mb < 16000:  # 12-16GB (RTX 3080, RTX 4070, etc.)
+        bs = 1
+        ga_steps = 32
+        print(f"[CONFIG] Standard VRAM GPU detected ({vram_mb:.0f}MB) - using memory conservation")
+    elif vram_mb < 24000:  # 16-24GB (RTX 3090, RTX 4080, RTX 4090)
+        bs = 1
+        ga_steps = 24
+        print(f"[CONFIG] High VRAM GPU detected ({vram_mb:.0f}MB) - using moderate memory conservation")
+    elif "H100" in gpu_name.upper() or vram_mb > 70000:  # H100 or A100 80GB
+        bs = 1
+        ga_steps = 16
+        print(f"[CONFIG] Enterprise GPU detected ({gpu_name}) - using minimal memory conservation")
+    else:  # Everything else
+        bs = 1
+        ga_steps = 32
+        print(f"[CONFIG] Unknown GPU configuration ({vram_mb:.0f}MB) - using conservative settings")
     
     return device, bs, ga_steps
 
@@ -549,13 +609,68 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
             gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else ""
             use_bf16 = "H100" in gpu_name.upper()
             
-            # Load model with explicit device mapping and 8-bit quantization
+            # Determine GPU memory category for ultra-low memory optimization
+            vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3) if torch.cuda.is_available() else 0
+            
+            # Ultra-aggressive memory settings for low-memory CUDA
+            if device == "cuda":
+                if vram_gb < 8:  # <8GB GPU
+                    max_memory_limit = f"{int(vram_gb * 0.7)}GB"  # Use only 70% of VRAM
+                    use_4bit = True
+                    use_8bit = False
+                elif vram_gb < 12:  # 8-12GB GPU
+                    max_memory_limit = f"{int(vram_gb * 0.75)}GB"  # Use 75% of VRAM
+                    use_4bit = False
+                    use_8bit = True
+                elif vram_gb < 16:  # 12-16GB GPU
+                    max_memory_limit = f"{int(vram_gb * 0.8)}GB"  # Use 80% of VRAM
+                    use_4bit = False
+                    use_8bit = True
+                else:  # >16GB GPU
+                    max_memory_limit = f"{int(vram_gb * 0.85)}GB"  # Use 85% of VRAM
+                    use_4bit = False
+                    use_8bit = True
+                
+                print(f"[CONFIG] GPU Memory: {vram_gb:.1f}GB, Limit: {max_memory_limit}, 4bit: {use_4bit}, 8bit: {use_8bit}")
+            else:
+                max_memory_limit = None
+                use_4bit = False
+                use_8bit = False
+            
+            # Load model with memory-optimized settings
             model_kwargs = {
-                "load_in_8bit": True if device == "cuda" else False,
-                "torch_dtype": torch.bfloat16 if use_bf16 else (torch.float16 if device == "cuda" else torch.float32),
+                "torch_dtype": torch.float16 if device == "cuda" else torch.float32,  # Always use FP16 for CUDA
                 "device_map": "auto" if device == "cuda" else None,
-                "low_cpu_mem_usage": True
+                "low_cpu_mem_usage": True,
+                "trust_remote_code": True,
+                "use_cache": False,  # Disable KV cache to save memory
             }
+            
+            # Add quantization settings
+            if device == "cuda":
+                if use_4bit:
+                    from transformers import BitsAndBytesConfig
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=torch.float16,
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_quant_type="nf4"
+                    )
+                    model_kwargs["quantization_config"] = quantization_config
+                    print("[CONFIG] Using 4-bit quantization for extreme memory savings")
+                elif use_8bit:
+                    model_kwargs["load_in_8bit"] = True
+                    print("[CONFIG] Using 8-bit quantization for memory savings")
+                
+                # Set memory limits
+                if max_memory_limit:
+                    model_kwargs["max_memory"] = {0: max_memory_limit}
+                
+                # Enable CPU offloading for very low memory
+                if vram_gb < 12:
+                    model_kwargs["offload_folder"] = os.path.join(output_dir, "offload")
+                    model_kwargs["offload_state_dict"] = True
+                    print("[CONFIG] Enabling CPU offloading for low memory GPU")
             
             model = AutoModelForCausalLM.from_pretrained(
                 "fdtn-ai/Foundation-Sec-8B",
@@ -582,14 +697,35 @@ Assistant: {{ message['content'] }}
 {% endfor %}
 Assistant: '''
 
-            # Configure LoRA for parameter-efficient fine-tuning
+            # Configure LoRA for ultra-low memory efficiency
+            if vram_gb < 8:  # <8GB GPU - Extreme memory conservation
+                lora_r = 2
+                lora_alpha = 4
+                target_modules = ["q_proj"]  # Only one module for extreme cases
+                print("[CONFIG] Ultra-minimal LoRA for <8GB GPU: r=2, alpha=4, 1 module")
+            elif vram_gb < 12:  # 8-12GB GPU - High memory conservation
+                lora_r = 4
+                lora_alpha = 8
+                target_modules = ["q_proj", "v_proj"]  # Two modules
+                print("[CONFIG] Minimal LoRA for 8-12GB GPU: r=4, alpha=8, 2 modules")
+            elif vram_gb < 16:  # 12-16GB GPU - Moderate memory conservation
+                lora_r = 8
+                lora_alpha = 16
+                target_modules = ["q_proj", "v_proj", "k_proj"]  # Three modules
+                print("[CONFIG] Conservative LoRA for 12-16GB GPU: r=8, alpha=16, 3 modules")
+            else:  # >16GB GPU - Standard configuration
+                lora_r = 8
+                lora_alpha = 16
+                target_modules = ["q_proj", "v_proj", "k_proj", "o_proj"]  # Four modules
+                print("[CONFIG] Standard LoRA for >16GB GPU: r=8, alpha=16, 4 modules")
+            
             lora_config = LoraConfig(
-                r=8,  # Reduced from 16 for memory efficiency
-                lora_alpha=16,  # Reduced proportionally
+                r=lora_r,
+                lora_alpha=lora_alpha,
                 lora_dropout=0.05,
                 bias="none",
                 task_type="CAUSAL_LM",
-                target_modules=["q_proj", "v_proj", "k_proj", "o_proj"]  # Reduced target modules
+                target_modules=target_modules
             )
             
             # Apply LoRA
@@ -601,14 +737,29 @@ Assistant: '''
             train_dataset = load_dataset('json', data_files=train_file, split='train')
             eval_dataset = load_dataset('json', data_files=eval_file, split='train')
             
-            # Calculate training steps (bs and ga_steps already set by setup_device)
-            num_epochs = 3
+            # Calculate training steps with memory-aware configuration
+            if vram_gb < 8:  # <8GB GPU - Reduce epochs for very low memory
+                num_epochs = 2
+                eval_batch_size = 1
+                save_total_limit = 1  # Keep only 1 checkpoint
+                print("[CONFIG] Ultra-low memory: 2 epochs, minimal checkpoints")
+            elif vram_gb < 12:  # 8-12GB GPU
+                num_epochs = 2
+                eval_batch_size = 1
+                save_total_limit = 2
+                print("[CONFIG] Low memory: 2 epochs, few checkpoints")
+            else:  # >12GB GPU
+                num_epochs = 3
+                eval_batch_size = bs
+                save_total_limit = 3
+                print("[CONFIG] Standard memory: 3 epochs, normal checkpoints")
+            
             total_steps = len(train_dataset) * num_epochs // (bs * ga_steps)
             eval_steps = max(100, total_steps // 10)
             save_steps = max(200, total_steps // 5)
             
             print(f"Training for {num_epochs} epochs with {total_steps} total steps")
-            print(f"Using batch_size={bs}, gradient_accumulation_steps={ga_steps}")
+            print(f"Using batch_size={bs}, eval_batch_size={eval_batch_size}, gradient_accumulation_steps={ga_steps}")
             print_memory_usage("before_dataset_processing")
             
             # Create a data formatting function closure with device access
@@ -630,49 +781,161 @@ Assistant: '''
             )
             print_memory_usage("after_dataset_processing")
             
-            # Initialize trainer
-            trainer = Trainer(
-                model=model,
-                args=TrainingArguments(
-                    output_dir=os.path.join(output_dir, "checkpoints"),
-                    overwrite_output_dir=True,
-                    num_train_epochs=num_epochs,
-                    per_device_train_batch_size=bs,
-                    per_device_eval_batch_size=bs,
-                    gradient_accumulation_steps=ga_steps,
-                    learning_rate=2e-5,
-                    weight_decay=0.01,
-                    warmup_ratio=0.03,
-                    logging_steps=10,
-                    eval_steps=eval_steps,
-                    save_steps=save_steps,
-                    eval_strategy="steps",
-                    save_strategy="steps",
-                    load_best_model_at_end=True,
-                    bf16=use_bf16,  # Use BF16 for H100, FP16 for others
-                    fp16=True if device == "cuda" and not use_bf16 else False,
-                    gradient_checkpointing=True if device == "cuda" else False,
-                    report_to="none",
-                    save_total_limit=3,
-                    logging_first_step=True,
-                    dataloader_num_workers=0,  # Reduce from 4 to save memory
-                    dataloader_pin_memory=False,  # Disable pin memory to save GPU memory
-                    dataloader_drop_last=True,
-                    max_grad_norm=1.0,
-                    no_cuda=device == "cpu",
-                    local_rank=-1,  # Disable distributed training
-                    ddp_find_unused_parameters=False,
-                    remove_unused_columns=False  # Prevent extra memory usage during preprocessing
-                ),
-                train_dataset=train_dataset,
-                eval_dataset=eval_dataset,
-                data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
+            # Memory-optimized training arguments
+            training_args = TrainingArguments(
+                output_dir=os.path.join(output_dir, "checkpoints"),
+                overwrite_output_dir=True,
+                num_train_epochs=num_epochs,
+                per_device_train_batch_size=bs,
+                per_device_eval_batch_size=eval_batch_size,
+                gradient_accumulation_steps=ga_steps,
+                learning_rate=2e-5,
+                weight_decay=0.01,
+                warmup_ratio=0.03,
+                logging_steps=20,  # Reduce logging frequency to save memory
+                eval_steps=eval_steps,
+                save_steps=save_steps,
+                eval_strategy="steps",
+                save_strategy="steps",
+                load_best_model_at_end=False if vram_gb < 8 else True,  # Disable for ultra-low memory
+                metric_for_best_model=None,  # Disable metric tracking to save memory
+                greater_is_better=None,
+                # Precision settings
+                fp16=True if device == "cuda" else False,  # Always use FP16 for CUDA
+                bf16=False,  # Disable BF16 to save memory
+                fp16_opt_level="O1",  # Conservative FP16 optimization
+                # Memory optimization settings
+                gradient_checkpointing=True if device == "cuda" else False,
+                dataloader_num_workers=0,  # No workers to save memory
+                dataloader_pin_memory=False,  # Disable pin memory
+                dataloader_drop_last=True,
+                remove_unused_columns=False,
+                # Training stability
+                max_grad_norm=1.0,
+                warmup_steps=max(10, total_steps // 50),  # Minimal warmup
+                # Checkpointing
+                save_total_limit=save_total_limit,
+                save_only_model=True,  # Save only model weights, not optimizer state
+                # Logging and monitoring
+                logging_first_step=True,
+                log_level="warning",  # Reduce log verbosity
+                report_to="none",
+                # Hardware settings
+                no_cuda=device == "cpu",
+                local_rank=-1,
+                ddp_find_unused_parameters=False,
+                # Advanced memory settings
+                skip_memory_metrics=True,  # Skip memory metrics to save overhead
+                log_on_each_node=False,
+                ignore_data_skip=True,
+                prediction_loss_only=True,  # Only compute loss, no other metrics
+                # Optimizer settings
+                optim="adamw_torch" if vram_gb < 12 else "adamw_torch_fused",  # Use regular AdamW for low memory
+                adam_epsilon=1e-8,
+                max_steps=-1,
+                # Additional memory optimizations
+                push_to_hub=False,
+                hub_model_id=None,
+                hub_strategy="every_save",
+                hub_token=None,
+                # Evaluation settings
+                evaluation_strategy="steps" if eval_batch_size > 0 else "no",
+                eval_delay=0,
+                eval_accumulation_steps=None,
+                # Memory-specific optimizations
+                length_column_name=None,  # Disable length grouping
+                group_by_length=False,  # Disable grouping to save memory
+                past_index=-1,
+                run_name=None,
+                disable_tqdm=False,
+                seed=42,
+                data_seed=None
             )
             
-            # Start training
-            print("Starting training...")
+            # Initialize trainer with memory-optimized settings
+            trainer = Trainer(
+                model=model,
+                args=training_args,
+                train_dataset=train_dataset,
+                eval_dataset=eval_dataset if eval_batch_size > 0 else None,
+                data_collator=DataCollatorForLanguageModeling(
+                    tokenizer=tokenizer, 
+                    mlm=False,
+                    return_tensors="pt",
+                    pad_to_multiple_of=8 if device == "cuda" else None
+                ),
+            )
+            
+            # Add training callback for low-memory environments
+            from transformers import TrainerCallback
+            
+            class LowMemoryCallback(TrainerCallback):
+                def __init__(self, vram_gb):
+                    self.vram_gb = vram_gb
+                    self.step_count = 0
+                
+                def on_step_end(self, args, state, control, **kwargs):
+                    self.step_count += 1
+                    # Clean up memory every few steps for low-memory GPUs
+                    if self.vram_gb < 8 and self.step_count % 5 == 0:
+                        cleanup_memory(aggressive=True)
+                    elif self.vram_gb < 12 and self.step_count % 10 == 0:
+                        cleanup_memory(aggressive=True)
+                    elif self.vram_gb < 16 and self.step_count % 20 == 0:
+                        cleanup_memory(aggressive=False)
+                
+                def on_evaluate(self, args, state, control, **kwargs):
+                    # Always clean up after evaluation
+                    if self.vram_gb < 16:
+                        cleanup_memory(aggressive=True)
+                
+                def on_save(self, args, state, control, **kwargs):
+                    # Clean up after saving checkpoints
+                    cleanup_memory(aggressive=True)
+            
+            # Add callback for low-memory management
+            if vram_gb < 16:
+                trainer.add_callback(LowMemoryCallback(vram_gb))
+                print(f"[CONFIG] Added low-memory callback for {vram_gb:.1f}GB GPU")
+            
+            # Start training with ultra-aggressive memory monitoring
+            print("Starting low-memory optimized training...")
             print_memory_usage("before_training_start")
-            trainer.train()
+            
+            # Ultra-aggressive memory cleanup before training
+            cleanup_memory(aggressive=True)
+            
+            # Try training with comprehensive memory monitoring
+            try:
+                trainer.train()
+            except torch.cuda.OutOfMemoryError as e:
+                print(f"[ERROR] CUDA OOM Error during training: {e}")
+                print("[RECOVERY] Attempting emergency memory recovery...")
+                
+                # Emergency memory cleanup
+                cleanup_memory(aggressive=True)
+                
+                # Ultra-conservative emergency settings
+                print("[RECOVERY] Switching to ultra-conservative emergency settings...")
+                trainer.args.per_device_train_batch_size = 1
+                trainer.args.gradient_accumulation_steps = max(64, trainer.args.gradient_accumulation_steps * 4)
+                trainer.args.dataloader_num_workers = 0
+                trainer.args.dataloader_pin_memory = False
+                trainer.args.eval_strategy = "no"  # Disable evaluation
+                trainer.args.save_strategy = "no"  # Disable checkpointing
+                trainer.args.logging_steps = 50  # Reduce logging
+                
+                # Remove evaluation dataset to save memory
+                trainer.eval_dataset = None
+                
+                # Final memory cleanup and retry
+                cleanup_memory(aggressive=True)
+                print("[RECOVERY] Retrying training with emergency settings...")
+                trainer.train()
+            except Exception as e:
+                print(f"[ERROR] Training failed with error: {e}")
+                cleanup_memory(aggressive=True)
+                raise
             
             # Save the final model
             print("Training complete. Saving the model...")
@@ -693,23 +956,23 @@ Assistant: '''
             with open(pickle_path, 'wb') as f:
                 pickle.dump(inference_package, f)
             
-            print(f"\n✅ Fine-tuning complete!")
-            print(f"📁 Fine-tuned model saved to: {final_model_path}")
-            print(f"🔗 Inference package saved to: {pickle_path}")
-            print(f"\n🚀 To use the model for inference:")
+            print(f"\n[SUCCESS] Fine-tuning complete!")
+            print(f"[FILE] Fine-tuned model saved to: {final_model_path}")
+            print(f"[FILE] Inference package saved to: {pickle_path}")
+            print(f"\n[INFO] To use the model for inference:")
             print(f"   python risk_inference.py --model {pickle_path} --text \"Your text to analyze\"")
             
             return pickle_path
             
         except ImportError as e:
-            print(f"\n❌ Missing required packages for fine-tuning: {str(e)}")
+            print(f"\n[ERROR] Missing required packages for fine-tuning: {str(e)}")
             print("Install required packages with:")
             print("pip install transformers datasets accelerate peft bitsandbytes torch")
             return None
             
         except Exception as e:
             cleanup_memory()  # Clean up memory on error
-            print(f"\n❌ Error during fine-tuning: {str(e)}")
+            print(f"\n[ERROR] Error during fine-tuning: {str(e)}")
             traceback.print_exc()
             return None
             
@@ -738,23 +1001,23 @@ def main():
         data_format = detect_data_format(args.training_data)
         
         if data_format == 'raw_folder':
-            print("\n✓ Detected raw data folder - will automatically extract and process Excel/CSV files")
+            print("\n[OK] Detected raw data folder - will automatically extract and process Excel/CSV files")
         elif data_format == 'raw_file':
-            print("\n✓ Detected raw data file - will extract and process content")
+            print("\n[OK] Detected raw data file - will extract and process content")
         elif data_format == 'formatted_file':
-            print("\n✓ Detected pre-formatted training data file")
+            print("\n[OK] Detected pre-formatted training data file")
         else:
-            print(f"\n⚠ Warning: Unknown data format. Will attempt to process anyway.")
+            print(f"\n[WARNING] Warning: Unknown data format. Will attempt to process anyway.")
         
         # Start fine-tuning
         result = fine_tune_model(args.training_data, args.output)
         
         if result:
-            print(f"\n✅ Fine-tuning completed successfully!")
+            print(f"\n[SUCCESS] Fine-tuning completed successfully!")
             print(f"Model saved to: {result}")
             return 0
         else:
-            print(f"\n❌ Fine-tuning failed!")
+            print(f"\n[ERROR] Fine-tuning failed!")
             return 1
             
     except Exception as e:
