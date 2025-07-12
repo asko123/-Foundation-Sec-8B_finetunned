@@ -616,8 +616,24 @@ def fine_tune_model(training_data_path: str, output_dir: str = "fine_tuning_data
             )
             print_memory_usage("after_model_loading")
             
+            # FIXED: Proper model preparation for quantized training
             if device == "cuda" and (use_4bit or use_8bit):
+                print("[CONFIG] Preparing model for quantized training...")
                 model = prepare_model_for_kbit_training(model)
+                
+                # Ensure model is in training mode
+                model.train()
+                
+                # Additional fix for gradient requirements
+                for name, param in model.named_parameters():
+                    if "lora" in name.lower() or "adapter" in name.lower():
+                        param.requires_grad = True
+                        
+                print("[CONFIG] Model prepared for quantized training")
+            else:
+                # For non-quantized models, ensure training mode
+                model.train()
+                print("[CONFIG] Model set to training mode")
             
             # Load tokenizer
             tokenizer = AutoTokenizer.from_pretrained("fdtn-ai/Foundation-Sec-8B")
@@ -662,8 +678,24 @@ Assistant: '''
             )
             
             # Apply LoRA
+            print("[CONFIG] Applying LoRA configuration...")
             model = get_peft_model(model, lora_config)
+            
+            # FIXED: Ensure LoRA parameters require gradients
+            for name, param in model.named_parameters():
+                if "lora" in name.lower() or "adapter" in name.lower():
+                    param.requires_grad = True
+                    
+            # Print trainable parameters
             model.print_trainable_parameters()
+            
+            # Verify that we have trainable parameters
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            if trainable_params == 0:
+                raise RuntimeError("No trainable parameters found! This will cause gradient computation errors.")
+            else:
+                print(f"[CONFIG] ✓ Found {trainable_params:,} trainable parameters")
+            
             print_memory_usage("after_lora_application")
             
             # Load datasets
@@ -749,17 +781,21 @@ Assistant: '''
                 disable_tqdm=False,
             )
             
+            # FIXED: Proper data collator configuration
+            data_collator = DataCollatorForLanguageModeling(
+                tokenizer=tokenizer, 
+                mlm=False,
+                return_tensors="pt",
+                pad_to_multiple_of=8 if device == "cuda" else None
+            )
+            
             # Initialize trainer
             trainer = Trainer(
                 model=model,
                 args=training_args,
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
-                data_collator=DataCollatorForLanguageModeling(
-                    tokenizer=tokenizer, 
-                    mlm=False,
-                    return_tensors="pt"
-                ),
+                data_collator=data_collator,
             )
             
             # FIXED: Simplified callback without aggressive cleanup
