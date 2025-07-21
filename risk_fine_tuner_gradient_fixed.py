@@ -20,6 +20,10 @@ import traceback
 import re
 import argparse
 import sys
+import time
+import glob
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Union
 
 # Third-party imports
@@ -57,6 +61,112 @@ from risk_fine_tuner_constants import (
     SENSITIVITY_LEVELS
 )
 from ddl_pii_analyzer import DDLPIIAnalyzer
+
+def find_latest_checkpoint(checkpoint_dir: str) -> Optional[str]:
+    """Find the latest checkpoint in the checkpoint directory."""
+    if not os.path.exists(checkpoint_dir):
+        return None
+    
+    # Look for checkpoint directories
+    checkpoint_pattern = os.path.join(checkpoint_dir, "checkpoint-*")
+    checkpoints = glob.glob(checkpoint_pattern)
+    
+    if not checkpoints:
+        return None
+    
+    # Sort by checkpoint number
+    def get_checkpoint_number(path):
+        try:
+            return int(os.path.basename(path).split('-')[1])
+        except (IndexError, ValueError):
+            return 0
+    
+    latest_checkpoint = max(checkpoints, key=get_checkpoint_number)
+    
+    # Verify checkpoint is valid
+    if os.path.exists(os.path.join(latest_checkpoint, "pytorch_model.bin")) or \
+       os.path.exists(os.path.join(latest_checkpoint, "adapter_model.bin")) or \
+       any(f.endswith(".safetensors") for f in os.listdir(latest_checkpoint)):
+        print(f"[CHECKPOINT] Found latest checkpoint: {latest_checkpoint}")
+        return latest_checkpoint
+    
+    return None
+
+def save_training_state(output_dir: str, train_examples: List, eval_examples: List, 
+                       current_step: int = 0, total_steps: int = 0):
+    """Save training state for resume capability."""
+    state_file = os.path.join(output_dir, "training_state.json")
+    
+    state = {
+        "timestamp": datetime.now().isoformat(),
+        "current_step": current_step,
+        "total_steps": total_steps,
+        "train_examples_count": len(train_examples),
+        "eval_examples_count": len(eval_examples),
+        "data_files": {
+            "train": os.path.join(output_dir, "train_fixed.jsonl"),
+            "eval": os.path.join(output_dir, "eval_fixed.jsonl")
+        }
+    }
+    
+    with open(state_file, 'w') as f:
+        json.dump(state, f, indent=2)
+    
+    print(f"[STATE] Saved training state to {state_file}")
+
+def load_training_state(output_dir: str) -> Optional[Dict]:
+    """Load training state for resume."""
+    state_file = os.path.join(output_dir, "training_state.json")
+    
+    if not os.path.exists(state_file):
+        return None
+    
+    try:
+        with open(state_file, 'r') as f:
+            state = json.load(f)
+        
+        print(f"[STATE] Loaded training state from {state_file}")
+        print(f"[STATE] Previous run: {state['current_step']}/{state['total_steps']} steps")
+        return state
+    except Exception as e:
+        print(f"[STATE] Failed to load training state: {e}")
+        return None
+
+class CheckpointCallback:
+    """Callback for time-based and step-based checkpointing."""
+    
+    def __init__(self, output_dir: str, save_every_minutes: int = 30):
+        self.output_dir = output_dir
+        self.save_every_minutes = save_every_minutes
+        self.last_save_time = time.time()
+        self.start_time = time.time()
+    
+    def should_save_checkpoint(self, current_step: int) -> bool:
+        """Determine if we should save a checkpoint based on time."""
+        current_time = time.time()
+        elapsed_minutes = (current_time - self.last_save_time) / 60
+        
+        if elapsed_minutes >= self.save_every_minutes:
+            self.last_save_time = current_time
+            return True
+        
+        return False
+    
+    def log_progress(self, current_step: int, total_steps: int):
+        """Log training progress with time estimates."""
+        current_time = time.time()
+        elapsed_time = current_time - self.start_time
+        
+        if current_step > 0:
+            avg_time_per_step = elapsed_time / current_step
+            remaining_steps = total_steps - current_step
+            estimated_remaining_time = remaining_steps * avg_time_per_step
+            
+            elapsed_str = str(timedelta(seconds=int(elapsed_time)))
+            remaining_str = str(timedelta(seconds=int(estimated_remaining_time)))
+            
+            print(f"[PROGRESS] Step {current_step}/{total_steps} ({current_step/total_steps*100:.1f}%)")
+            print(f"[TIME] Elapsed: {elapsed_str}, Estimated remaining: {remaining_str}")
 
 def format_all_categories_for_prompt() -> str:
     """Format all categories (risk and PII) for inclusion in prompts."""
