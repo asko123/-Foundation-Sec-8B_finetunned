@@ -56,6 +56,7 @@ from risk_fine_tuner_constants import (
     PRIVACY_CLASSIFICATIONS,
     SENSITIVITY_LEVELS
 )
+from ddl_pii_analyzer import DDLPIIAnalyzer
 
 def format_all_categories_for_prompt() -> str:
     """Format all categories (risk and PII) for inclusion in prompts."""
@@ -80,6 +81,206 @@ def format_all_categories_for_prompt() -> str:
         categories_text += f"- {pii_type}\n"
             
     return categories_text
+
+def detect_data_format(training_data_path: str) -> str:
+    """Detect whether the provided path contains raw data or pre-formatted training data."""
+    if os.path.isdir(training_data_path):
+        # Check if directory contains raw Excel/CSV files
+        for file in os.listdir(training_data_path):
+            file_ext = os.path.splitext(file)[1].lower()
+            if file_ext in ['.xlsx', '.xls', '.csv']:
+                return 'raw_folder'
+        return 'unknown'
+    elif os.path.isfile(training_data_path):
+        file_ext = os.path.splitext(training_data_path)[1].lower()
+        if file_ext in ['.json', '.jsonl']:
+            return 'formatted_file'
+        elif file_ext in ['.xlsx', '.xls', '.csv']:
+            return 'raw_file'
+    return 'unknown'
+
+def load_training_file(file_path: str) -> List[Dict[str, Any]]:
+    """Load training data from a file based on its extension."""
+    from risk_fine_tuner_enhanced import load_training_file as enhanced_load
+    return enhanced_load(file_path)
+
+def format_risk_example(example, categories):
+    """Format a risk categorization example for fine-tuning."""
+    try:
+        text = example["text"]
+        l2_category = example["l2_category"]
+        macro_risks = example["macro_risks"]
+        
+        return {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": f"You are an expert cybersecurity risk analyst with extensive experience in categorizing security findings according to standardized risk frameworks. Your task is to analyze security risk findings and correctly identify both the L2 category and specific macro risks.\n\nYou must use ONLY the standardized categories provided below.\n\n{categories}\n\nGuidelines for risk categorization:\n1. Each security finding belongs to exactly ONE L2 category - select the most appropriate match\n2. Security findings often exhibit multiple macro risks within their L2 category\n3. L2 categories represent broad areas of security concern, while macro risks are specific vulnerabilities or weaknesses\n4. You must only select macro risks that belong to the chosen L2 category\n5. You must never invent new categories or risks\n6. IMPORTANT: The numbers assigned to each L2 category (1, 2, 3, etc.) are just identifiers - focus on the text descriptions when determining the appropriate category\n\nContext: Security risk categorization is critical for organizations to standardize their approach to risk management, ensure comprehensive coverage across all risk domains, and enable consistent prioritization and remediation."
+                },
+                {
+                    "role": "user",
+                    "content": f"I need to analyze a security risk finding to identify the L2 category and specific macro risks.\n\nText to analyze:\n{text}\n\nIs this a security risk finding or text with potential PII?"
+                },
+                {
+                    "role": "assistant",
+                    "content": "This is a security risk finding."
+                },
+                {
+                    "role": "user",
+                    "content": "Please provide your risk analysis in a structured JSON format with:\n1. 'l2_category': Select ONE L2 category from the standardized list (include both the number and name)\n2. 'macro_risks': Provide an array of specific macro risks from the corresponding list\n\nAnalyze the finding carefully to ensure accurate categorization. Focus on the description of the L2 categories, not their numbers."
+                },
+                {
+                    "role": "assistant",
+                    "content": f"{{\n  \"l2_category\": \"{l2_category}\",\n  \"macro_risks\": {json.dumps(macro_risks, indent=2)}\n}}"
+                }
+            ]
+        }
+    except Exception as e:
+        print(f"Error formatting risk example: {str(e)}")
+        return None
+
+def format_pii_example(example, categories):
+    """Format a PII classification example for fine-tuning."""
+    try:
+        text = example["text"]
+        pc_category = example["pc_category"]
+        pii_types = example["pii_types"]
+        
+        return {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": f"You are a specialized data privacy expert with deep knowledge of personally identifiable information (PII) detection and classification. Your expertise helps organizations properly handle sensitive data in compliance with regulations like GDPR, CCPA, and HIPAA.\n\nYou must use ONLY the standardized categories provided below.\n\n{categories}\n\nGuidelines for PII classification:\n\n1. PC0 (Public) - Information with no confidentiality requirements that can be freely shared\n   • Examples: Public documentation, marketing materials, open data\n   • Contains no personally identifiable information\n   • May include general business information that is already publicly available\n\n2. PC1 (Internal) - Information with basic confidentiality requirements\n   • Examples: Names, business contact details, customer IDs, general business data\n   • Contains limited personal identifiers but no sensitive personal data\n   • Requires basic protection but would cause minimal harm if disclosed\n\n3. PC3 (Confidential) - Information with high protection requirements\n   • Examples: SSNs, financial data, health information, credentials, biometrics\n   • Contains sensitive personal data requiring strict protection\n   • Would cause significant harm to individuals if improperly disclosed\n\nYour task is to analyze text, identify if it contains PII, classify it into the correct protection category, and list the specific types of PII found."
+                },
+                {
+                    "role": "user",
+                    "content": f"Please analyze the following text to identify any PII and classify it according to the protection categories.\n\nIMPORTANT: Apply the HIGHEST SENSITIVITY RULE - if text contains data of different sensitivity levels, classify the ENTIRE text at the highest level present.\n\nText to analyze:\n{text}\n\nIs this a security risk finding or text with potential PII?"
+                },
+                {
+                    "role": "assistant",
+                    "content": "This is text with potential PII."
+                },
+                {
+                    "role": "user",
+                    "content": "Please provide your PII analysis in a structured JSON format with:\n1. 'pc_category': Select ONE protection category using the HIGHEST SENSITIVITY RULE:\n   - If ANY PC3 (confidential) data is present → classify as PC3\n   - If ANY PC1 (internal) data is present (and no PC3) → classify as PC1\n   - Only if ALL data is PC0 (public) → classify as PC0\n2. 'pii_types': Provide an array of specific PII types found (if any)\n\nAnalyze the text carefully to ensure accurate classification at the highest sensitivity level present."
+                },
+                {
+                    "role": "assistant",
+                    "content": f"{{\n  \"pc_category\": \"{pc_category}\",\n  \"pii_types\": {json.dumps(pii_types, indent=2)}\n}}"
+                }
+            ]
+        }
+    except Exception as e:
+        print(f"Error formatting PII example: {str(e)}")
+        return None
+
+def format_ddl_example(example, categories):
+    """Format a DDL analysis example for fine-tuning."""
+    try:
+        ddl_statement = example["ddl_statement"]
+        analysis_result = example["analysis_result"]
+        
+        return {
+            "messages": [
+                {
+                    "role": "system", 
+                    "content": f"You are a specialized database privacy expert with deep knowledge of Data Definition Language (DDL) analysis and PII detection in database schemas. Your expertise helps organizations identify potential privacy risks during database design and ensure compliance with data protection regulations.\n\nYou must use ONLY the standardized categories provided below.\n\n{categories}\n\nGuidelines for DDL PII Analysis:\n\n1. Analyze column names, data types, and constraints to identify potential PII\n2. Apply the HIGHEST SENSITIVITY RULE for overall table classification\n3. Consider data type patterns (e.g., CHAR(11) might be SSN, VARCHAR(255) might be email)\n4. Identify compliance requirements based on detected PII types\n5. Provide specific privacy recommendations for the database schema\n\nYour task is to analyze DDL statements and identify what types of PII data the resulting table will contain, along with appropriate protection requirements."
+                },
+                {
+                    "role": "user",
+                    "content": f"Please analyze the following DDL statement to identify potential PII data that will be stored in this table.\n\nDDL Statement:\n{ddl_statement}\n\nIs this a security risk finding, DDL statement for PII analysis, or text with potential PII?"
+                },
+                {
+                    "role": "assistant", 
+                    "content": "This is a DDL statement for PII analysis."
+                },
+                {
+                    "role": "user",
+                    "content": "Please provide your DDL PII analysis in a structured JSON format with:\n1. 'table_name': Name of the table being created\n2. 'overall_classification': Overall protection category (PC0, PC1, PC3, or AMBIGUOUS)\n   - Use HIGHEST SENSITIVITY RULE for clear PII\n   - Use AMBIGUOUS when column names could be PII or non-PII\n3. 'detected_pii_types': Array of PII types that will be stored in this table\n4. 'high_risk_columns': Array of column names that contain PC3 (confidential) data  \n5. 'ambiguous_columns': Array of column names that require human review\n6. 'requires_human_review': Boolean indicating if manual inspection is needed\n7. 'compliance_flags': Array of compliance requirements (e.g., REQUIRES_GDPR_REVIEW)\n8. 'privacy_recommendations': Array of specific recommendations for this schema\n\nAnalyze the DDL statement carefully. Mark as AMBIGUOUS when column names like 'name', 'id', 'address', 'number' could be either personal data or system data depending on context."
+                },
+                {
+                    "role": "assistant",
+                    "content": json.dumps(analysis_result, indent=2)
+                }
+            ]
+        }
+    except Exception as e:
+        print(f"Error formatting DDL example: {str(e)}")
+        return None
+
+def create_ddl_training_examples(ddl_statements: List[str]) -> List[Dict[str, Any]]:
+    """Create training examples from DDL statements."""
+    analyzer = DDLPIIAnalyzer()
+    training_examples = []
+    
+    for ddl in ddl_statements:
+        try:
+            # Analyze the DDL statement
+            analysis = analyzer.analyze_ddl_statement(ddl)
+            
+            # Create simplified result for training
+            training_result = {
+                "table_name": analysis["table_name"],
+                "overall_classification": analysis["overall_classification"],
+                "detected_pii_types": list(set(
+                    analysis["pii_summary"]["PC3"] + 
+                    analysis["pii_summary"]["PC1"] + 
+                    analysis["pii_summary"]["PC0"] +
+                    analysis["pii_summary"]["AMBIGUOUS"]
+                )),
+                "high_risk_columns": [
+                    col["column_name"] for col in analysis["columns"] 
+                    if col["pc_category"] == "PC3"
+                ],
+                "ambiguous_columns": [
+                    amb_col["column_name"] for amb_col in analysis.get("ambiguous_columns", [])
+                ],
+                "requires_human_review": analysis.get("requires_human_review", False),
+                "compliance_flags": analysis["compliance_flags"],
+                "privacy_recommendations": analysis["privacy_recommendations"][:3]  # Top 3 recommendations
+            }
+            
+            example = {
+                "type": "ddl",
+                "ddl_statement": ddl.strip(),
+                "analysis_result": training_result
+            }
+            
+            training_examples.append(example)
+            
+        except Exception as e:
+            print(f"Error creating DDL training example: {str(e)}")
+            continue
+    
+    return training_examples
+
+def process_batch(examples: List[Dict[str, Any]], file_handle) -> None:
+    """Process a batch of examples and write them to a JSONL file."""
+    try:
+        categories = format_all_categories_for_prompt()
+        
+        for example in tqdm(examples, desc="Formatting examples"):
+            try:
+                example_type = example.get("type", "unknown")
+                
+                if example_type == "risk":
+                    formatted_example = format_risk_example(example, categories)
+                elif example_type == "pii":
+                    formatted_example = format_pii_example(example, categories)
+                elif example_type == "ddl":
+                    formatted_example = format_ddl_example(example, categories)
+                else:
+                    print(f"Warning: Unknown example type: {example_type}")
+                    continue
+                
+                if formatted_example:
+                    file_handle.write(json.dumps(formatted_example) + '\n')
+            except Exception as e:
+                print(f"Error processing example: {str(e)}")
+                continue
+    except Exception as e:
+        print(f"Error in batch processing: {str(e)}")
+        traceback.print_exc()
 
 def setup_model_for_training(model_name: str, device: str, use_quantization: bool = False) -> Tuple[Any, Any]:
     """
@@ -315,15 +516,7 @@ def fine_tune_model_fixed(training_data_path: str, output_dir: str = "fine_tunin
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     
-    # Load and prepare training data (using existing functions)
-    from risk_fine_tuner import (
-        detect_data_format, 
-        load_training_file, 
-        process_folder_for_training_data,
-        format_risk_example,
-        format_pii_example,
-        process_batch
-    )
+    # Load and prepare training data (functions now included in this script)
     
     # Detect and load training data
     data_format = detect_data_format(training_data_path)
@@ -492,8 +685,16 @@ def fine_tune_model_fixed(training_data_path: str, output_dir: str = "fine_tunin
     # Create inference package
     pickle_path = os.path.join(output_dir, "fixed_model.pkl")
     
-    from risk_fine_tuner import create_inference_package
-    inference_package = create_inference_package(final_model_path)
+    # Create the inference package with the correct format
+    inference_package = {
+        "model_path": final_model_path,
+        "unified": True,
+        "l2": L2,
+        "macro_risks": MACRO_RISKS,
+        "pii_protection_categories": PII_PROTECTION_CATEGORIES,
+        "pii_types": PII_TYPES,
+        "is_fallback": False
+    }
     
     with open(pickle_path, 'wb') as f:
         pickle.dump(inference_package, f)
@@ -505,25 +706,91 @@ def fine_tune_model_fixed(training_data_path: str, output_dir: str = "fine_tunin
     return pickle_path
 
 def main():
-    """Main function."""
-    parser = argparse.ArgumentParser(description="Gradient-Fixed Risk & PII Fine-Tuner")
-    parser.add_argument("--training-data", required=True, help="Path to training data")
-    parser.add_argument("--output", default="fine_tuning_output_fixed", help="Output directory")
+    """Main function with enhanced argument parsing for checkpointing."""
+    parser = argparse.ArgumentParser(
+        description="Gradient-Fixed Risk & PII Fine-Tuner with H100 Checkpointing",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+H100 Checkpointing Examples:
+
+  # Start new training
+  python risk_fine_tuner_gradient_fixed.py --training-data ./data --output ./output
+
+  # Resume from specific checkpoint
+  python risk_fine_tuner_gradient_fixed.py --training-data ./data --output ./output --resume-from-checkpoint ./output/checkpoints/checkpoint-1000
+
+  # Auto-resume from latest checkpoint (if found)
+  python risk_fine_tuner_gradient_fixed.py --training-data ./data --output ./output
+
+  # Resume after interruption (auto-detects latest checkpoint)
+  python risk_fine_tuner_gradient_fixed.py --training-data ./data --output ./existing_output
+
+Checkpointing Features:
+  - Automatic checkpoint detection and resume
+  - Frequent saves optimized for H100 (every 25-200 steps depending on VRAM)
+  - Time-based checkpointing (every 30 minutes)
+  - Graceful handling of interruptions
+  - Progress tracking with time estimates
+  - Multiple checkpoint retention for safety
+        """
+    )
+    
+    parser.add_argument("--training-data", required=True, 
+                       help="Path to training data (file or directory)")
+    parser.add_argument("--output", default="fine_tuning_output_fixed", 
+                       help="Output directory for model and checkpoints")
+    parser.add_argument("--resume-from-checkpoint", type=str, 
+                       help="Specific checkpoint path to resume from (auto-detects if not specified)")
+    parser.add_argument("--no-auto-resume", action="store_true",
+                       help="Disable automatic checkpoint detection and resume")
     
     args = parser.parse_args()
     
+    # Determine resume strategy
+    resume_checkpoint = None
+    if not args.no_auto_resume:
+        if args.resume_from_checkpoint:
+            resume_checkpoint = args.resume_from_checkpoint
+        else:
+            # Auto-detect latest checkpoint
+            checkpoint_dir = os.path.join(args.output, "checkpoints")
+            resume_checkpoint = find_latest_checkpoint(checkpoint_dir)
+            if resume_checkpoint:
+                print(f"[AUTO-RESUME] Found checkpoint: {resume_checkpoint}")
+                response = input("Resume from this checkpoint? [Y/n]: ").strip().lower()
+                if response and response[0] == 'n':
+                    resume_checkpoint = None
+                    print("[AUTO-RESUME] Starting fresh training")
+                else:
+                    print("[AUTO-RESUME] Resuming from checkpoint")
+    
     try:
-        result = fine_tune_model_fixed(args.training_data, args.output)
+        print(f"[START] H100 Training Session")
+        print(f"[CONFIG] Training data: {args.training_data}")
+        print(f"[CONFIG] Output directory: {args.output}")
+        print(f"[CONFIG] Resume checkpoint: {resume_checkpoint or 'None (fresh start)'}")
+        
+        result = fine_tune_model_fixed(
+            training_data_path=args.training_data, 
+            output_dir=args.output,
+            resume_from_checkpoint=resume_checkpoint
+        )
         
         if result:
-            print(f"\n✅ SUCCESS! Model saved to: {result}")
+            print(f"\nSUCCESS! Model saved to: {result}")
+            print(f"[H100] Training completed successfully")
             return 0
         else:
-            print(f"\n❌ FAILED!")
+            print(f"\nFAILED!")
             return 1
             
+    except KeyboardInterrupt:
+        print(f"\n[INTERRUPT] Training interrupted by user")
+        print(f"[CHECKPOINT] Check {args.output}/checkpoints/ for saved checkpoints")
+        print(f"[RESUME] Use --resume-from-checkpoint to continue training")
+        return 130  # Standard exit code for SIGINT
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
         traceback.print_exc()
         return 1
 

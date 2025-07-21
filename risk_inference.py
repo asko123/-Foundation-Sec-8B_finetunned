@@ -39,7 +39,7 @@ def load_inference_model(pickle_path: str) -> Tuple:
         
         print(f"Loading model from {model_path} ({'unified' if unified else 'task-specific'} model)")
         if is_fallback:
-            print("⚠️  Using fallback model (fine-tuning was not successful)")
+            print("WARNING: Using fallback model (fine-tuning was not successful)")
         
         # Check if CUDA is available
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -187,11 +187,11 @@ def detect_text_type(model, tokenizer, categories: Dict, text: str) -> str:
     messages = [
         {
             "role": "system",
-            "content": f"You are a dual-specialized expert in both cybersecurity risk analysis and data privacy (PII detection). Your first task is to determine whether the given text represents a security risk finding that needs risk categorization, or text that potentially contains personally identifiable information (PII) requiring privacy classification.\n\nBelow are the standardized categories you must use for reference:\n\n{categories_text}\n\nSecurity risk findings typically describe vulnerabilities, threats, or weaknesses in systems, processes, or controls that could be exploited, lead to unauthorized access, or otherwise impact security objectives.\n\nText with PII typically contains personal identifiers like names, contact information, IDs, or sensitive personal data that requires protection based on privacy regulations."
+            "content": f"You are a triple-specialized expert in cybersecurity risk analysis, data privacy (PII detection), and database schema privacy analysis. Your first task is to determine whether the given input represents:\n1. A security risk finding that needs risk categorization\n2. Text that potentially contains personally identifiable information (PII) requiring privacy classification\n3. A DDL (Data Definition Language) statement that needs database schema privacy analysis\n\nBelow are the standardized categories you must use for reference:\n\n{categories_text}\n\nSecurity risk findings typically describe vulnerabilities, threats, or weaknesses in systems, processes, or controls that could be exploited, lead to unauthorized access, or otherwise impact security objectives.\n\nText with PII typically contains personal identifiers like names, contact information, IDs, or sensitive personal data that requires protection based on privacy regulations.\n\nDDL statements are SQL commands like CREATE TABLE, ALTER TABLE that define database schemas and may indicate what types of PII data will be stored."
         },
         {
             "role": "user",
-            "content": f"Please analyze the following text and determine if it is a security risk finding that requires risk categorization, or text that potentially contains PII requiring privacy classification.\n\nText to analyze:\n{text}\n\nIs this a security risk finding or text with potential PII?"
+            "content": f"Please analyze the following input and determine if it is:\n1. A security risk finding that requires risk categorization\n2. Text that potentially contains PII requiring privacy classification\n3. A DDL statement that requires database schema privacy analysis\n\nInput to analyze:\n{text}\n\nIs this a security risk finding, text with potential PII, or a DDL statement?"
         }
     ]
     
@@ -295,7 +295,10 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
         },
         {
             "role": "user",
-            "content": f"Please analyze the following text to identify any PII and classify it according to the protection categories (PC0, PC1, or PC3).\n\nText to analyze:\n{text}\n\nPlease provide your analysis in a structured JSON format with:\n1. 'pc_category': Select ONE protection category (PC0, PC1, or PC3) based on the sensitivity of any PII present\n2. 'pii_types': Provide an array of specific PII types found (if any)\n\nAnalyze the text carefully to ensure accurate classification."
+            "content": f"Please analyze the following text to identify any PII and classify it according to the protection categories (PC0, PC1, or PC3).\n\nText to analyze:\n{text}\n\nPlease provide your analysis in a structured JSON format with:\n1. 'pc_category': Select ONE protection category using the HIGHEST SENSITIVITY RULE:
+   - If ANY PC3 (confidential) data is present → classify as PC3
+   - If ANY PC1 (internal) data is present (and no PC3) → classify as PC1
+   - Only if ALL data is PC0 (public) → classify as PC0\n2. 'pii_types': Provide an array of specific PII types found (if any)\n\nAnalyze the text carefully to ensure accurate classification."
         }
     ]
     

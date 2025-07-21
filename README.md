@@ -1,171 +1,145 @@
-# Foundation-Sec-8B Fine-Tuning for Risk Analysis and PII Detection
+# Foundation-Sec-8B Fine-Tuner with H100 Checkpointing
 
-This repository contains tools for fine-tuning the Foundation-Sec-8B model to perform two critical security tasks:
-1. **Security Risk Categorization** - Classify security findings into 12 standardized macro risk categories and their specific themes
-2. **PII Detection and Classification** - Identify personally identifiable information and classify it into protection categories (PC0/PC1/PC3)
+Unified fine-tuning system for security risk categorization and PII detection with robust checkpointing for H100 GPUs.
 
-## 🚀 Quick Start
+## Features
 
-### Installation
+- **Risk Categorization**: L2 categories and macro risks mapping
+- **PII Detection**: PC0/PC1/PC3 classification with "highest sensitivity wins" rule  
+- **DDL Analysis**: Database schema PII detection with ambiguous classification
+- **H100 Checkpointing**: Auto-resume from interruptions with optimized batch sizes
+- **Time-Limited Training**: Built for 4-day GPU time limits
+
+## Training with Checkpoints
+
+### Start New Training
+```bash
+# Using shell script (recommended)
+./run_gradient_fixed.sh --data ./training_data --output ./h100_output
+
+# Using Python directly
+python risk_fine_tuner_gradient_fixed.py --training-data ./training_data --output ./h100_output
+```
+
+### Resume from Latest Checkpoint (Auto-detect)
+```bash
+./run_gradient_fixed.sh --data ./training_data --output ./h100_output
+# Will auto-detect checkpoints and prompt to resume
+```
+
+### Resume from Specific Checkpoint
+```bash
+./run_gradient_fixed.sh --data ./training_data --output ./h100_output --resume ./h100_output/checkpoints/checkpoint-1000
+```
+
+### Force Fresh Start (Ignore Checkpoints)
+```bash
+./run_gradient_fixed.sh --data ./training_data --output ./h100_output --no-auto-resume
+```
+
+## H100 Configurations
+
+| VRAM | Batch Size | Grad Accumulation | Save Steps | Precision |
+|------|------------|-------------------|------------|-----------|
+| 80GB (H100) | 4 | 8 | 25 | bf16 |
+| 40GB (H100/A100) | 2 | 16 | 50 | bf16 |
+| 20GB (RTX 4090) | 1 | 32 | 100 | fp16 |
+| <20GB | 1 | 64 | 200 | fp16 |
+
+## Checkpoint Management
+
+- **Automatic saves**: Every 25-200 steps (based on VRAM)
+- **Time-based saves**: Every 30 minutes
+- **Interruption handling**: Graceful Ctrl+C with state saving
+- **Error recovery**: Auto-save on training exceptions
+- **Multiple retention**: Keeps 10 checkpoints for safety
+
+## File Structure
+```
+output/
+├── checkpoints/checkpoint-{step}/    # Training checkpoints
+├── final_model/                      # Final trained model
+├── fixed_model.pkl                   # Inference package
+└── training_state.json               # Resume metadata
+```
+
+## Running Inference
+
+### Load and Analyze Text
+```python
+from risk_inference import load_inference_model, analyze_text
+
+# Load trained model
+model, tokenizer, unified, categories = load_inference_model("./output/fixed_model.pkl")
+
+# Analyze security risk finding
+result = analyze_text(model, tokenizer, unified, categories, "Password policy lacks complexity requirements")
+print(f"L2 Category: {result['l2_category']}")
+print(f"Macro Risks: {result['macro_risks']}")
+
+# Analyze PII text
+result = analyze_text(model, tokenizer, unified, categories, "John Smith, SSN: 123-45-6789")
+print(f"PC Category: {result['pc_category']}")
+print(f"PII Types: {result['pii_types']}")
+```
+
+### Command Line Inference
+```bash
+# Analyze single text
+python risk_inference.py --model ./output/fixed_model.pkl --text "Database lacks encryption"
+
+# Analyze file
+python risk_inference.py --model ./output/fixed_model.pkl --file findings.txt --output results.json
+
+# Supported file formats: txt, json, jsonl, csv, xlsx
+```
+
+## Training Data Formats
+
+### Risk Examples
+```json
+{
+  "type": "risk",
+  "text": "Database lacks encryption at rest",
+  "l2_category": "5. Protect Data", 
+  "macro_risks": ["Encryption (At Rest, Use, Transit)"]
+}
+```
+
+### PII Examples  
+```json
+{
+  "type": "pii",
+  "text": "Customer John Smith, email: john@company.com",
+  "pc_category": "PC1",
+  "pii_types": ["Name", "Email"]
+}
+```
+
+### DDL Examples
+```json
+{
+  "type": "ddl", 
+  "ddl_statement": "CREATE TABLE users (id INT, email VARCHAR(255), ssn CHAR(11))",
+  "analysis_result": {
+    "overall_classification": "PC3",
+    "detected_pii_types": ["Email", "SSN"],
+    "requires_human_review": false
+  }
+}
+```
+
+## Installation
 
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd Foundation-Sec-8B_finetunned
-
-# Create and activate virtual environment (recommended)
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-### Running the Pipeline
+## Categories
 
-There are three main ways to use this system:
-
-1. **Enhanced Data Processing & Fine-Tuning (Recommended)**:
-```bash
-# Process raw data and optionally start fine-tuning
-python run_enhanced_fine_tuner.py --folder /path/to/raw/data --run-fine-tuning
-
-# This will:
-# 1. Process all Excel/CSV files in the folder
-# 2. Generate training examples
-# 3. Start fine-tuning if --run-fine-tuning is specified
-```
-
-2. **Direct Fine-Tuning** (if you have pre-formatted data):
-```bash
-python risk_fine_tuner.py --training-data your_data.jsonl --output my_model
-```
-
-3. **Inference** (after fine-tuning):
-```bash
-python risk_inference.py --model my_model/unified_model_with_categories.pkl --text "Your text here"
-```
-
-## 📊 Data Processing
-
-### Input Data Support
-
-The system now supports various input formats and field names:
-
-#### Title Fields:
-- Finding_Title, Title, FINDING_TITLE, TITLE
-- Name, NAME, Summary, SUMMARY
-- Issue_Title, ISSUE, Observation_Title
-- Vulnerability_Title, Vuln_Title, Heading, Subject
-
-#### Description Fields:
-- Finding_Description, Description, DESCRIPTION
-- Details, DETAILS, Content, CONTENT
-- Issue_Description, Detail, Observation
-- Observation_Details, Vulnerability_Description
-- Finding_Details, Notes, Comments, Body
-
-#### Category Fields:
-- L2, Category, Type, Classification
-- Risk_Category, Finding_Category
-- Vulnerability_Type, Vuln_Type, Risk_Type
-- Issue_Type, Severity, Risk_Classification
-- Security_Classification
-
-#### Risk Fields:
-- macro_risks, Risks, Risk_Types, Categories
-- Risk_Tags, Tags, Risk_Classification
-- Threat_Types, Threat_Categories
-- Impact_Types, Vulnerability_Tags
-- Security_Tags, Risk_Areas, Risk_Domains
-
-### Output Files
-
-The system generates several output files:
-
-```
-output_directory/
-├── auto_generated_training_data.jsonl  # Processed training examples
-├── extraction_summary.json             # Processing statistics
-├── unified_model_with_categories.pkl   # Fine-tuned model package
-└── fine_tuned_model/                  # Model files
-```
-
-### Example Output Statistics
-
-```
-Extracted 1000 examples:
-- Complete examples: 600    (with both L2 and risks)
-- With L2 only: 100        (missing risks)
-- With risks only: 50      (missing L2)
-- Partial examples: 250    (useful but incomplete)
-```
-
-## 🔧 Advanced Usage
-
-### Processing Options
-
-```bash
-# Process data with custom options
-python run_enhanced_fine_tuner.py \
-  --folder /path/to/data \
-  --output custom_output \
-  --run-fine-tuning
-
-# Process and save to specific directory
-python run_enhanced_fine_tuner.py \
-  --folder /path/to/data \
-  --output my_output \
-  --training-data training_data
-```
-
-### Linux Environment Setup
-
-If you encounter library issues on Linux:
-
-```bash
-# Fix environment issues
-./fix_threading.sh
-
-# Run scripts with fixes
-./run_python_fixed.sh run_enhanced_fine_tuner.py --folder /path/to/data
-```
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-1. **"No training examples could be generated"**
-   - Check your input data format
-   - Verify column names match supported fields
-   - Ensure files contain meaningful text content
-   - Check the extraction_summary.json for details
-
-2. **Memory Issues**
-   - Data is processed in batches of 5000 rows
-   - Reduce batch size if needed in the code
-   - Use virtual environment with clean dependencies
-
-3. **Excel/CSV Reading Errors**
-   - Verify file permissions
-   - Check file encoding (UTF-8, latin1, etc.)
-   - Ensure files aren't corrupted or locked
-
-### Debug Output
-
-The system now provides focused error reporting:
-- File processing status
-- Critical errors only
-- Processing statistics
-- Extraction summary
-
-## 📚 Risk Categories
-
-The system uses standardized risk categories:
-
-**L2 Categories:**
+### L2 Risk Categories
 1. Operating Model & Risk Management
-2. Develop and Acquire Software and Systems
+2. Develop and Acquire Software and Systems  
 3. Manage & Demise IT Assets
 4. Manage Data
 5. Protect Data
@@ -177,24 +151,54 @@ The system uses standardized risk categories:
 11. Monitor and Respond to Security Incidents
 12. Manage Business Continuity and Disaster Recovery
 
-Each L2 category has associated **Macro Risks** that represent specific vulnerabilities or weaknesses within that category.
+### PII Protection Categories
+- **PC0**: Public information (no confidentiality requirements)
+- **PC1**: Internal information (basic confidentiality requirements)  
+- **PC3**: Confidential information (high protection requirements)
 
-**PII Protection Categories:**
-- PC0: Public information (no confidentiality requirements)
-- PC1: Internal information (basic confidentiality)
-- PC3: Confidential information (high protection requirements)
+## Transfer Between Machines
 
-## 📝 License
+```bash
+# Package training state
+tar -czf training.tar.gz ./output/
 
-[Your License Here]
+# On new machine
+tar -xzf training.tar.gz
+./run_gradient_fixed.sh --data ./training_data --output ./output
+# Auto-detects and resumes from checkpoint
+```
 
-## 🤝 Contributing
+## **How Checkpoints Work - Summary:**
 
-Contributions are welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Submit a pull request
+**🔄 AUTOMATIC OPERATION:**
+- **Training saves every 25 steps** (H100) automatically
+- **Time-based backup every 30 minutes** 
+- **Just run the same command** to resume - it detects checkpoints automatically
 
-## 📧 Support
+**📁 WHAT GETS SAVED:**
+- Model weights (LoRA adapters)
+- Optimizer state (momentum, learning rates)
+- Training progress (current step, epoch)
+- Processed training data (no reprocessing needed)
 
-For issues or questions, please open a GitHub issue or contact [your contact info].
+**🚀 RESUME PROCESS:**
+1. Script scans `./output/checkpoints/` folder
+2. Finds highest numbered checkpoint (e.g., `checkpoint-875`)
+3. Prompts: `Resume from this checkpoint? [Y/n]:`
+4. Press **Enter** (default YES) → continues from step 876
+5. Training picks up **exactly where it stopped**
+
+**💾 4-DAY WORKFLOW:**
+```bash
+# Day 1-3: Start training
+./run_gradient_fixed.sh --data ./training_data --output ./h100_session
+
+# Day 4: Copy entire folder to new machine
+tar -czf session.tar.gz ./h100_session/
+
+# New machine: Same command auto-resumes
+./run_gradient_fixed.sh --data ./training_data --output ./h100_session
+```
+
+**🎯 KEY BENEFIT:**
+**Zero manual work** - just run the same command and it automatically continues where you left off. Perfect for time-limited GPU rentals!

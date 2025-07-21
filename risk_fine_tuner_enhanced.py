@@ -1076,11 +1076,11 @@ def main():
         result = fine_tune_model(training_file, args.output)
         
         if result:
-            print(f"\n✅ Fine-tuning completed successfully!")
+            print(f"\nFine-tuning completed successfully!")
             print(f"Model saved to: {result}")
             return 0
         else:
-            print(f"\n❌ Fine-tuning failed!")
+            print(f"\nFine-tuning failed!")
             return 1
         
     except Exception as e:
