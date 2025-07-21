@@ -178,11 +178,21 @@ else:
     print('CUDA not available')
 " 2>/dev/null || true
 
-# Start memory monitoring in background
-print_status "Starting memory monitor..."
-python3 memory_monitor.py --interval 10 --log-file "$MEMORY_LOG_FILE" &
+# Optional built-in memory monitoring in background
+print_status "Starting built-in memory monitor..."
+(
+    # Simple memory monitoring function
+    while true; do
+        if command -v nvidia-smi >/dev/null 2>&1; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] $(nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits | head -1)" >> "$MEMORY_LOG_FILE"
+        else
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] nvidia-smi not available" >> "$MEMORY_LOG_FILE"
+        fi
+        sleep 30  # Log every 30 seconds
+    done
+) &
 MEMORY_PID=$!
-print_success "Memory monitor started (PID: $MEMORY_PID)"
+print_success "Built-in memory monitor started (PID: $MEMORY_PID)"
 
 # Build command line arguments for Python script
 PYTHON_ARGS="--training-data \"$TRAINING_DATA\" --output \"$OUTPUT_DIR\""
