@@ -616,17 +616,40 @@ class CustomDataCollator:
             "labels": labels
         }
 
-def fine_tune_model_fixed(training_data_path: str, output_dir: str = "fine_tuning_output") -> Optional[str]:
+def fine_tune_model_fixed(training_data_path: str, output_dir: str = "fine_tuning_output", 
+                         resume_from_checkpoint: Optional[str] = None) -> Optional[str]:
     """
-    Fine-tune model with comprehensive gradient fixes.
-    COMPLETELY FIXED VERSION for gradient requirements.
+    Fine-tune model with comprehensive gradient fixes and H100 checkpointing.
+    COMPLETELY FIXED VERSION for gradient requirements with resume capability.
     """
-    print("=== GRADIENT-FIXED FINE-TUNING ===")
+    print("=== GRADIENT-FIXED FINE-TUNING WITH H100 CHECKPOINTING ===")
     
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     
-    # Load and prepare training data (functions now included in this script)
+    # Initialize checkpoint callback
+    checkpoint_callback = CheckpointCallback(output_dir, save_every_minutes=30)  # Save every 30 minutes
+    
+    # Check for resume capability
+    if resume_from_checkpoint:
+        print(f"[RESUME] Attempting to resume from: {resume_from_checkpoint}")
+        if not os.path.exists(resume_from_checkpoint):
+            print(f"[RESUME] Checkpoint not found: {resume_from_checkpoint}")
+            resume_from_checkpoint = None
+        else:
+            print(f"[RESUME] Valid checkpoint found: {resume_from_checkpoint}")
+    else:
+        # Auto-detect latest checkpoint
+        checkpoint_dir = os.path.join(output_dir, "checkpoints")
+        latest_checkpoint = find_latest_checkpoint(checkpoint_dir)
+        if latest_checkpoint:
+            print(f"[RESUME] Auto-detected checkpoint: {latest_checkpoint}")
+            resume_from_checkpoint = latest_checkpoint
+    
+    # Load previous training state if resuming
+    training_state = None
+    if resume_from_checkpoint:
+        training_state = load_training_state(output_dir)
     
     # Detect and load training data
     data_format = detect_data_format(training_data_path)
@@ -784,7 +807,7 @@ def fine_tune_model_fixed(training_data_path: str, output_dir: str = "fine_tunin
     
     # Start training
     print("[TRAIN] Starting training...")
-    trainer.train()
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     
     # Save model
     print("[SAVE] Saving model...")
