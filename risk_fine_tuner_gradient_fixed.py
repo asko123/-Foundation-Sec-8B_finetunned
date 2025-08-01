@@ -737,8 +737,9 @@ def fine_tune_model_fixed(training_data_path: str, output_dir: str = "fine_tunin
     
     print(f"[TRAIN] Batch size: {batch_size}, Gradient accumulation: {gradient_accumulation_steps}")
     
-    # FIXED: Set environment variable for PyTorch serialization compatibility
+    # FIXED: Set environment variables for PyTorch serialization compatibility
     os.environ['TORCH_SERIALIZATION_SAFE_GLOBALS'] = '1'
+    os.environ['PYTORCH_LOAD_WEIGHTS_ONLY'] = 'false'  # Disable weights_only for checkpoint loading
     
     # Training arguments
     training_args = TrainingArguments(
@@ -810,33 +811,86 @@ def fine_tune_model_fixed(training_data_path: str, output_dir: str = "fine_tunin
     
     # FIXED: Torch serialization security for checkpoint loading
     print("[FIX] Configuring PyTorch serialization for checkpoint compatibility...")
-    # Allow numpy reconstruction for checkpoint loading (if supported)
+    
+    # Method 1: Try to add safe globals with proper function objects
     try:
         if hasattr(torch, 'serialization') and hasattr(torch.serialization, 'add_safe_globals'):
-            torch.serialization.add_safe_globals([
-                'numpy.core.multiarray._reconstruct',
-                'numpy.ndarray', 
-                'numpy.dtype',
-                'numpy.core.multiarray.scalar'
-            ])
-            print("[FIX] Added safe globals for numpy array loading")
+            # Import numpy functions properly for safe globals
+            import numpy as np
+            import numpy.core.multiarray
+            
+            # Add the actual function objects, not strings
+            safe_globals = []
+            try:
+                safe_globals.append(numpy.core.multiarray._reconstruct)
+            except AttributeError:
+                pass
+            try:
+                safe_globals.append(np.ndarray)
+            except AttributeError:
+                pass
+            try:
+                safe_globals.append(np.dtype)
+            except AttributeError:
+                pass
+            
+            if safe_globals:
+                torch.serialization.add_safe_globals(safe_globals)
+                print(f"[FIX] Added {len(safe_globals)} safe globals for numpy loading")
+            else:
+                print("[FIX] No numpy safe globals could be added")
         else:
-            print("[FIX] torch.serialization.add_safe_globals not available, using fallback")
+            print("[FIX] torch.serialization.add_safe_globals not available")
     except Exception as e:
-        print(f"[FIX] Could not configure serialization: {e}")
+        print(f"[FIX] Could not configure safe globals: {e}")
+    
+    # Method 2: Monkey patch torch.load to use weights_only=False for RNG files
+    original_torch_load = None
+    try:
+        original_torch_load = torch.load
+        def patched_torch_load(*args, **kwargs):
+            # If loading RNG state files, disable weights_only
+            if len(args) > 0 and isinstance(args[0], str) and 'rng_state' in args[0]:
+                kwargs['weights_only'] = False
+                print(f"[FIX] Loading {args[0]} with weights_only=False")
+            return original_torch_load(*args, **kwargs)
+        torch.load = patched_torch_load
+        print("[FIX] Applied torch.load patch for RNG state files")
+    except Exception as e:
+        print(f"[FIX] Could not patch torch.load: {e}")
     
     # Start training
     print("[TRAIN] Starting training...")
     try:
         trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     except Exception as checkpoint_error:
-        if resume_from_checkpoint and "weights_only" in str(checkpoint_error):
+        error_str = str(checkpoint_error)
+        if resume_from_checkpoint and any(err in error_str for err in ["weights_only", "__module__", "AttributeError"]):
             print(f"[FALLBACK] Checkpoint loading failed with serialization error: {checkpoint_error}")
-            print(f"[FALLBACK] Attempting to start training without checkpoint resume...")
-            print(f"[WARNING] Training will start from the beginning, not from checkpoint step")
-            trainer.train()  # Start fresh without checkpoint
+            print(f"[FALLBACK] This is a PyTorch security restriction for checkpoint loading")
+            print(f"[FALLBACK] Attempting alternative solution...")
+            
+            # Try alternative approach: temporarily disable weights_only
+            try:
+                import os
+                os.environ['PYTORCH_LOAD_WEIGHTS_ONLY'] = 'false'
+                print("[FALLBACK] Set PYTORCH_LOAD_WEIGHTS_ONLY=false")
+                trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+            except Exception as e2:
+                print(f"[FALLBACK] Alternative approach also failed: {e2}")
+                print(f"[FALLBACK] Starting training from the beginning...")
+                print(f"[WARNING] Training will start from step 0, not from checkpoint step")
+                trainer.train()  # Start fresh without checkpoint
         else:
             raise  # Re-raise other errors
+    finally:
+        # Restore original torch.load function
+        try:
+            if original_torch_load is not None:
+                torch.load = original_torch_load
+                print("[FIX] Restored original torch.load function")
+        except:
+            pass
     
     # Save model
     print("[SAVE] Saving model...")
