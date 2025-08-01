@@ -737,6 +737,9 @@ def fine_tune_model_fixed(training_data_path: str, output_dir: str = "fine_tunin
     
     print(f"[TRAIN] Batch size: {batch_size}, Gradient accumulation: {gradient_accumulation_steps}")
     
+    # FIXED: Set environment variable for PyTorch serialization compatibility
+    os.environ['TORCH_SERIALIZATION_SAFE_GLOBALS'] = '1'
+    
     # Training arguments
     training_args = TrainingArguments(
         output_dir=os.path.join(output_dir, "checkpoints"),
@@ -807,18 +810,33 @@ def fine_tune_model_fixed(training_data_path: str, output_dir: str = "fine_tunin
     
     # FIXED: Torch serialization security for checkpoint loading
     print("[FIX] Configuring PyTorch serialization for checkpoint compatibility...")
-    import torch.serialization
-    # Allow numpy reconstruction for checkpoint loading
-    torch.serialization.add_safe_globals([
-        'numpy.core.multiarray._reconstruct',
-        'numpy.ndarray', 
-        'numpy.dtype',
-        'numpy.core.multiarray.scalar'
-    ])
+    # Allow numpy reconstruction for checkpoint loading (if supported)
+    try:
+        if hasattr(torch, 'serialization') and hasattr(torch.serialization, 'add_safe_globals'):
+            torch.serialization.add_safe_globals([
+                'numpy.core.multiarray._reconstruct',
+                'numpy.ndarray', 
+                'numpy.dtype',
+                'numpy.core.multiarray.scalar'
+            ])
+            print("[FIX] Added safe globals for numpy array loading")
+        else:
+            print("[FIX] torch.serialization.add_safe_globals not available, using fallback")
+    except Exception as e:
+        print(f"[FIX] Could not configure serialization: {e}")
     
     # Start training
     print("[TRAIN] Starting training...")
-    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+    try:
+        trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+    except Exception as checkpoint_error:
+        if resume_from_checkpoint and "weights_only" in str(checkpoint_error):
+            print(f"[FALLBACK] Checkpoint loading failed with serialization error: {checkpoint_error}")
+            print(f"[FALLBACK] Attempting to start training without checkpoint resume...")
+            print(f"[WARNING] Training will start from the beginning, not from checkpoint step")
+            trainer.train()  # Start fresh without checkpoint
+        else:
+            raise  # Re-raise other errors
     
     # Save model
     print("[SAVE] Saving model...")
