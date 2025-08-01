@@ -872,7 +872,6 @@ def fine_tune_model_fixed(training_data_path: str, output_dir: str = "fine_tunin
             
             # Try alternative approach: temporarily disable weights_only
             try:
-                import os
                 os.environ['PYTORCH_LOAD_WEIGHTS_ONLY'] = 'false'
                 print("[FALLBACK] Set PYTORCH_LOAD_WEIGHTS_ONLY=false")
                 trainer.train(resume_from_checkpoint=resume_from_checkpoint)
