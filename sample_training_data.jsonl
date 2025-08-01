@@ -1,0 +1,7 @@
+{"type": "risk", "text": "SQL injection vulnerability found in user login form. Attacker can bypass authentication using malicious input.", "l2_category": "1. Application Security", "macro_risks": ["SQL Injection", "Authentication Bypass"]}
+{"type": "pii", "text": "Customer record: John Doe, SSN: 123-45-6789, Email: john@example.com", "pc_category": "PC3", "pii_types": ["Full Name", "SSN", "Email Address"]}
+{"type": "risk", "text": "Unencrypted database connection allows credential interception", "l2_category": "2. Data Protection", "macro_risks": ["Data in Transit", "Credential Exposure"]}
+{"type": "pii", "text": "Employee directory with names and phone numbers", "pc_category": "PC1", "pii_types": ["Full Name", "Phone Number"]}
+{"type": "ddl", "ddl_statement": "CREATE TABLE users (id INT PRIMARY KEY, ssn VARCHAR(11), email VARCHAR(255), password_hash VARCHAR(64));", "analysis_result": {"table_name": "users", "overall_classification": "PC3", "detected_pii_types": ["SSN", "Email Address"], "high_risk_columns": ["ssn"], "ambiguous_columns": [], "requires_human_review": false, "compliance_flags": ["REQUIRES_GDPR_REVIEW"], "privacy_recommendations": ["Encrypt SSN column", "Hash email addresses"]}}
+{"type": "risk", "text": "Missing security headers allow clickjacking attacks", "l2_category": "1. Application Security", "macro_risks": ["Clickjacking", "Missing Security Controls"]}
+{"type": "pii", "text": "Public company blog post about new product launch", "pc_category": "PC0", "pii_types": []} 

@@ -805,6 +805,17 @@ def fine_tune_model_fixed(training_data_path: str, output_dir: str = "fine_tunin
         print(f"[TEST] ✗ Forward pass failed: {e}")
         raise
     
+    # FIXED: Torch serialization security for checkpoint loading
+    print("[FIX] Configuring PyTorch serialization for checkpoint compatibility...")
+    import torch.serialization
+    # Allow numpy reconstruction for checkpoint loading
+    torch.serialization.add_safe_globals([
+        'numpy.core.multiarray._reconstruct',
+        'numpy.ndarray', 
+        'numpy.dtype',
+        'numpy.core.multiarray.scalar'
+    ])
+    
     # Start training
     print("[TRAIN] Starting training...")
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
