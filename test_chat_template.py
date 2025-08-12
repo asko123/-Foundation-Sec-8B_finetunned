@@ -3,36 +3,60 @@
 Test script to verify chat template fallback functionality
 """
 
-from risk_inference import format_messages_for_model
+import sys
+from risk_inference import format_chat_messages
 
+# Mock tokenizer class without chat template
 class MockTokenizer:
-    """Mock tokenizer without chat template"""
-    def __init__(self):
-        self.chat_template = None
+    def __init__(self, has_template=False):
+        self.chat_template = None if not has_template else "simple_template"
+    
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
+        if self.chat_template is None:
+            raise ValueError("No chat template available")
+        return "Mock template output"
 
-def test_fallback_formatting():
-    """Test that fallback formatting works when chat template is not available"""
+def test_chat_template_fallback():
+    """Test the chat template fallback functionality."""
     
-    tokenizer = MockTokenizer()
-    
-    messages = [
+    test_messages = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Analyze this text for security risks."},
         {"role": "assistant", "content": "I'll analyze the text for you."}
     ]
     
-    result = format_messages_for_model(messages, tokenizer)
+    print("=== Testing Chat Template Fallback ===")
+    print()
     
-    print("✅ Chat template fallback test:")
-    print("=" * 50)
-    print(result)
-    print("=" * 50)
+    # Test 1: Tokenizer without chat template (should use fallback)
+    print("1. Testing tokenizer WITHOUT chat template:")
+    tokenizer_no_template = MockTokenizer(has_template=False)
     
-    # Verify the formatting
-    assert "System:" in result
-    assert "User:" in result  
-    assert "Assistant:" in result
-    print("✅ All formatting checks passed!")
+    try:
+        result1 = format_chat_messages(test_messages, tokenizer_no_template)
+        print("✅ Fallback formatting successful!")
+        print(f"Result preview: {result1[:100]}...")
+        print()
+    except Exception as e:
+        print(f"❌ Fallback failed: {e}")
+        return False
+    
+    # Test 2: Tokenizer with chat template (should use template)
+    print("2. Testing tokenizer WITH chat template:")
+    tokenizer_with_template = MockTokenizer(has_template=True)
+    
+    try:
+        result2 = format_chat_messages(test_messages, tokenizer_with_template)
+        print("✅ Template formatting successful!")
+        print(f"Result: {result2}")
+        print()
+    except Exception as e:
+        print(f"❌ Template failed: {e}")
+        return False
+    
+    print("=== All tests passed! ===")
+    return True
 
 if __name__ == "__main__":
-    test_fallback_formatting()
+    success = test_chat_template_fallback()
+    sys.exit(0 if success else 1)

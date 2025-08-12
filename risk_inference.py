@@ -94,6 +94,39 @@ def load_inference_model(pickle_path: str) -> Tuple:
         traceback.print_exc()
         return None, None, None, None
 
+def format_chat_messages(messages: List[Dict], tokenizer) -> str:
+    """
+    Format chat messages for models, with fallback for tokenizers without chat templates.
+    
+    Args:
+        messages: List of message dictionaries with 'role' and 'content' keys
+        tokenizer: The tokenizer (may or may not have chat_template)
+        
+    Returns:
+        Formatted string ready for tokenization
+    """
+    try:
+        # Try to use the tokenizer's chat template if available
+        if hasattr(tokenizer, 'apply_chat_template') and tokenizer.chat_template:
+            return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+    except Exception as e:
+        print(f"Warning: Could not use chat template: {e}")
+    
+    # Fallback: manual formatting
+    formatted_text = ""
+    for msg in messages:
+        role = msg["role"]
+        content = msg["content"]
+        
+        if role == "system":
+            formatted_text += f"System: {content}\n\n"
+        elif role == "user":
+            formatted_text += f"User: {content}\n\n"
+        elif role == "assistant":
+            formatted_text += f"Assistant: {content}\n\n"
+    
+    return formatted_text.strip()
+
 def format_all_categories_for_prompt(categories: Dict) -> str:
     """Format all categories for inclusion in prompts."""
     text = "PART 1: SECURITY RISK CATEGORIES\n\n"
@@ -165,31 +198,6 @@ def analyze_text(model, tokenizer, unified: bool, categories: Dict, text: str) -
             "error": str(e)
         }
 
-def format_messages_for_model(messages: List[Dict], tokenizer) -> str:
-    """
-    Format messages for the model, with fallback when chat template is not available.
-    """
-    try:
-        # Try to use the chat template if available
-        if hasattr(tokenizer, 'apply_chat_template') and tokenizer.chat_template:
-            return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-    except Exception as e:
-        print(f"Warning: Chat template not available ({e}), using fallback formatting")
-    
-    # Fallback to manual formatting
-    formatted_text = ""
-    for msg in messages:
-        role = msg["role"]
-        content = msg["content"]
-        if role == "system":
-            formatted_text += f"System: {content}\n\n"
-        elif role == "user":
-            formatted_text += f"User: {content}\n\n"
-        elif role == "assistant":
-            formatted_text += f"Assistant: {content}\n\n"
-    
-    return formatted_text.strip()
-
 def detect_text_type(model, tokenizer, categories: Dict, text: str) -> str:
     """
     Detect whether the text is a security risk finding or text with potential PII.
@@ -221,8 +229,8 @@ def detect_text_type(model, tokenizer, categories: Dict, text: str) -> str:
     ]
     
     # Create inputs without moving to device (model is already on the correct device)
-    formatted_text = format_messages_for_model(messages, tokenizer)
-    inputs = tokenizer(formatted_text, return_tensors="pt")
+    formatted_prompt = format_chat_messages(messages, tokenizer)
+    inputs = tokenizer(formatted_prompt, return_tensors="pt")
     
     # Generate the response
     with torch.no_grad():
@@ -270,8 +278,8 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
         ]
         
         # Generate response
-        formatted_text = format_messages_for_model(messages, tokenizer)
-        inputs = tokenizer(formatted_text, return_tensors="pt")
+        formatted_prompt = format_chat_messages(messages, tokenizer)
+        inputs = tokenizer(formatted_prompt, return_tensors="pt")
         
         import torch
         with torch.no_grad():
@@ -328,8 +336,8 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
     ]
     
     # Create inputs without moving to device
-    formatted_text = format_messages_for_model(messages, tokenizer)
-    inputs = tokenizer(formatted_text, return_tensors="pt")
+    formatted_prompt = format_chat_messages(messages, tokenizer)
+    inputs = tokenizer(formatted_prompt, return_tensors="pt")
     
     # Generate the response
     with torch.no_grad():
