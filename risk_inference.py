@@ -246,6 +246,7 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
         # Generate response
         inputs = tokenizer(tokenizer.apply_chat_template(messages, tokenize=False), return_tensors="pt")
         
+        import torch
         with torch.no_grad():
             outputs = model.generate(
                 inputs["input_ids"],
@@ -295,10 +296,7 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
         },
         {
             "role": "user",
-            "content": f"Please analyze the following text to identify any PII and classify it according to the protection categories (PC0, PC1, or PC3).\n\nText to analyze:\n{text}\n\nPlease provide your analysis in a structured JSON format with:\n1. 'pc_category': Select ONE protection category using the HIGHEST SENSITIVITY RULE:
-   - If ANY PC3 (confidential) data is present → classify as PC3
-   - If ANY PC1 (internal) data is present (and no PC3) → classify as PC1
-   - Only if ALL data is PC0 (public) → classify as PC0\n2. 'pii_types': Provide an array of specific PII types found (if any)\n\nAnalyze the text carefully to ensure accurate classification."
+            "content": f"Please analyze the following text to identify any PII and classify it according to the protection categories (PC0, PC1, or PC3).\n\nText to analyze:\n{text}\n\nPlease provide your analysis in a structured JSON format with:\n1. 'pc_category': Select ONE protection category using the HIGHEST SENSITIVITY RULE:\n   - If ANY PC3 (confidential) data is present → classify as PC3\n   - If ANY PC1 (internal) data is present (and no PC3) → classify as PC1\n   - Only if ALL data is PC0 (public) → classify as PC0\n2. 'pii_types': Provide an array of specific PII types found (if any)\n\nAnalyze the text carefully to ensure accurate classification."
         }
     ]
     

@@ -1,0 +1,10 @@
+SQL injection vulnerability detected in user authentication module
+Cross-site scripting (XSS) found in comment submission form
+Weak password policy allows dictionary attacks
+Unencrypted sensitive data transmission over HTTP
+Missing access controls on administrative functions
+Customer database contains: John Doe, SSN: 123-45-6789, Phone: 555-0123
+Employee records include salary and personal information
+Public marketing materials and product descriptions
+Financial transaction logs with credit card numbers
+Medical records containing patient diagnoses and treatments
