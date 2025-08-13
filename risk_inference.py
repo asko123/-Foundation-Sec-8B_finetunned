@@ -168,11 +168,53 @@ def parse_pii_response_as_text(response: str) -> Dict:
     
     result = {"success": False, "pc_category": None, "pii_types": []}
     
-    # Try to find PC category
+    # Try to find PC category with more comprehensive patterns
     pc_patterns = [
         r"pc[_\s]*category[:\s]*[\"']?(PC[0-3])[\"']?",
         r"(PC[0-3])",
+        r"protection[_\s]*category[:\s]*[\"']?(PC[0-3])[\"']?",
+        r"category[:\s]*[\"']?(PC[0-3])[\"']?",
+        r"classification[:\s]*[\"']?(PC[0-3])[\"']?",
     ]
+    
+    # If no explicit PC category found, infer from content
+    if not any(re.search(pattern, response, re.IGNORECASE) for pattern in pc_patterns):
+        response_lower = response.lower()
+        
+        # Check for PC3 indicators (highest priority)
+        pc3_indicators = [
+            'confidential', 'sensitive', 'ssn', 'social security', 'credit card', 
+            'financial', 'medical', 'health', 'password', 'credential', 'biometric'
+        ]
+        
+        # Check for PC1 indicators
+        pc1_indicators = [
+            'internal', 'personal', 'private', 'name', 'email', 'phone', 
+            'address', 'customer', 'employee', 'contact'
+        ]
+        
+        # Check for PC0 indicators (check first for negative indicators)
+        pc0_indicators = [
+            'no sensitive', 'no confidential', 'no pii', 'no personal', 'public only', 
+            'marketing only', 'general information', 'not sensitive', 'not confidential'
+        ]
+        
+        # Check for explicit PC0 terms
+        pc0_terms = ['public', 'marketing', 'general', 'open']
+        
+        # Check PC0 first (negative indicators have priority)
+        if any(indicator in response_lower for indicator in pc0_indicators):
+            result["pc_category"] = "PC0"
+            result["success"] = True
+        elif any(indicator in response_lower for indicator in pc3_indicators):
+            result["pc_category"] = "PC3"
+            result["success"] = True
+        elif any(indicator in response_lower for indicator in pc1_indicators):
+            result["pc_category"] = "PC1" 
+            result["success"] = True
+        elif any(term in response_lower for term in pc0_terms):
+            result["pc_category"] = "PC0"
+            result["success"] = True
     
     for pattern in pc_patterns:
         match = re.search(pattern, response, re.IGNORECASE)
