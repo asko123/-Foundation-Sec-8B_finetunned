@@ -143,8 +143,35 @@ def format_chat_messages(messages: List[Dict], tokenizer) -> str:
     
     return formatted_text.strip()
 
+def format_risk_categories_for_prompt(categories: Dict) -> str:
+    """Format only risk categories for risk analysis prompts."""
+    text = "L2 Risk Categories:\n"
+    
+    if 'l2' in categories:
+        for key, value in categories['l2'].items():
+            text += f"{key}. {value}\n"
+        
+        text += "\nMacro Risks:\n"
+        for key, risks in categories['macro_risks'].items():
+            text += f"{key}: " + ", ".join(risks) + "\n"
+    
+    return text
+
+def format_pii_categories_for_prompt(categories: Dict) -> str:
+    """Format only PII categories for PII analysis prompts."""
+    text = "PII Protection Categories:\n"
+    
+    if 'pii_protection_categories' in categories:
+        for key, value in categories['pii_protection_categories'].items():
+            text += f"{key}: {value}\n"
+        
+        if 'pii_types' in categories:
+            text += "\nCommon PII Types: " + ", ".join(categories['pii_types']) + "\n"
+    
+    return text
+
 def format_all_categories_for_prompt(categories: Dict) -> str:
-    """Format all categories for inclusion in prompts."""
+    """Format all categories for inclusion in prompts (legacy function)."""
     text = "PART 1: SECURITY RISK CATEGORIES\n\n"
     
     # Format L2 categories
@@ -271,25 +298,13 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
     """Analyze text as a security risk finding."""
     try:
         # Format the categories
-        categories_text = format_all_categories_for_prompt(categories)
+        categories_text = format_risk_categories_for_prompt(categories)
         
-        # Create an enhanced prompt for risk analysis
+        # Create a concise prompt for risk analysis
         messages = [
             {
-                "role": "system",
-                "content": f"You are an expert cybersecurity risk analyst with extensive experience in categorizing security findings according to standardized risk frameworks. Your task is to analyze security risk findings and correctly identify both the L2 category and specific macro risks.\n\nYou must use ONLY the standardized categories provided below.\n\n{categories_text}\n\nGuidelines for risk categorization:\n1. Each security finding belongs to exactly ONE L2 category - select the most appropriate match\n2. Security findings often exhibit multiple macro risks within their L2 category\n3. L2 categories represent broad areas of security concern, while macro risks are specific vulnerabilities or weaknesses\n4. You must only select macro risks that belong to the chosen L2 category\n5. You must never invent new categories or risks\n6. IMPORTANT: The numbers assigned to each L2 category (1, 2, 3, etc.) are just identifiers - focus on the text descriptions when determining the appropriate category\n\nContext: Security risk categorization is critical for organizations to standardize their approach to risk management, ensure comprehensive coverage across all risk domains, and enable consistent prioritization and remediation."
-            },
-            {
                 "role": "user",
-                "content": f"I need to analyze a security risk finding to identify the L2 category and specific macro risks.\n\nText to analyze:\n{text}\n\nIs this a security risk finding or text with potential PII?"
-            },
-            {
-                "role": "assistant",
-                "content": "This is a security risk finding."
-            },
-            {
-                "role": "user",
-                "content": "Please provide your risk analysis in a structured JSON format with:\n1. 'l2_category': Select ONE L2 category from the standardized list (include both the number and name)\n2. 'macro_risks': Provide an array of specific macro risks from the corresponding list\n\nAnalyze the finding carefully to ensure accurate categorization. Focus on the description of the L2 categories, not their numbers."
+                "content": f"Analyze this security risk finding and categorize it:\n\n{categories_text}\n\nSecurity Risk Finding:\n{text}\n\nProvide JSON response:\n{{\n  \"l2_category\": \"X. Category Name\",\n  \"macro_risks\": [\"Risk 1\", \"Risk 2\"]\n}}\n\nSelect ONE L2 category and relevant macro risks from that category."
             }
         ]
         
@@ -301,28 +316,43 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
         with torch.no_grad():
             outputs = model.generate(
                 inputs["input_ids"],
-                max_new_tokens=512,
-                temperature=0.1,
+                max_new_tokens=256,  # Reduced for more focused responses
+                temperature=0.3,     # Slightly higher for better diversity
                 top_p=0.9,
-                do_sample=True
+                do_sample=True,
+                repetition_penalty=1.1,  # Prevent repetitive text
+                pad_token_id=tokenizer.eos_token_id
             )
         
         response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
         
         try:
-            # Parse the JSON response
-            result = json.loads(response)
-            return {
-                "success": True,
-                "type": "risk",
-                "l2_category": result.get("l2_category"),
-                "macro_risks": result.get("macro_risks", [])
-            }
-        except json.JSONDecodeError:
+            # Try to extract JSON from the response
+            import re
+            json_match = re.search(r'({.*?})', response.replace('\n', ' '), re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+                result = json.loads(json_str)
+                return {
+                    "success": True,
+                    "type": "risk",
+                    "l2_category": result.get("l2_category"),
+                    "macro_risks": result.get("macro_risks", [])
+                }
+            else:
+                # If no JSON found, try to parse the entire response
+                result = json.loads(response)
+                return {
+                    "success": True,
+                    "type": "risk",
+                    "l2_category": result.get("l2_category"),
+                    "macro_risks": result.get("macro_risks", [])
+                }
+        except (json.JSONDecodeError, AttributeError):
             return {
                 "success": False,
                 "error": "Failed to parse model response as JSON",
-                "raw_response": response
+                "raw_response": response.strip()
             }
             
     except Exception as e:
@@ -337,17 +367,13 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
     import re
     
     # Format the categories
-    categories_text = format_all_categories_for_prompt(categories)
+    categories_text = format_pii_categories_for_prompt(categories)
     
-    # Create an enhanced prompt for PII analysis
+    # Create a concise prompt for PII analysis
     messages = [
         {
-            "role": "system",
-            "content": f"You are a specialized data privacy expert with deep knowledge of personally identifiable information (PII) detection and classification. Your expertise helps organizations properly handle sensitive data in compliance with regulations like GDPR, CCPA, and HIPAA.\n\nYou must use ONLY the standardized categories provided below.\n\n{categories_text}\n\nGuidelines for PII classification:\n\n1. PC0 (Public) - Information with no confidentiality requirements that can be freely shared\n   • Examples: Public documentation, marketing materials, open data\n   • Contains no personally identifiable information\n   • May include general business information that is already publicly available\n\n2. PC1 (Internal) - Information with basic confidentiality requirements\n   • Examples: Names, business contact details, customer IDs, general business data\n   • Contains limited personal identifiers but no sensitive personal data\n   • Requires basic protection but would cause minimal harm if disclosed\n\n3. PC3 (Confidential) - Information with high protection requirements\n   • Examples: SSNs, financial data, health information, credentials, biometrics\n   • Contains sensitive personal data requiring strict protection\n   • Would cause significant harm to individuals if improperly disclosed\n\nYour task is to analyze text, identify if it contains PII, classify it into the correct protection category, and list the specific types of PII found."
-        },
-        {
             "role": "user",
-            "content": f"Please analyze the following text to identify any PII and classify it according to the protection categories (PC0, PC1, or PC3).\n\nText to analyze:\n{text}\n\nPlease provide your analysis in a structured JSON format with:\n1. 'pc_category': Select ONE protection category using the HIGHEST SENSITIVITY RULE:\n   - If ANY PC3 (confidential) data is present → classify as PC3\n   - If ANY PC1 (internal) data is present (and no PC3) → classify as PC1\n   - Only if ALL data is PC0 (public) → classify as PC0\n2. 'pii_types': Provide an array of specific PII types found (if any)\n\nAnalyze the text carefully to ensure accurate classification."
+            "content": f"Analyze this text for PII:\n\n{categories_text}\n\nText to analyze:\n{text}\n\nProvide JSON response:\n{{\n  \"pc_category\": \"PC0/PC1/PC3\",\n  \"pii_types\": [\"Type1\", \"Type2\"]\n}}\n\nUse highest sensitivity rule: PC3 > PC1 > PC0."
         }
     ]
     
@@ -359,10 +385,12 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
     with torch.no_grad():
         outputs = model.generate(
             inputs["input_ids"],
-            max_new_tokens=512,
-            temperature=0.1,
+            max_new_tokens=256,  # Reduced for more focused responses
+            temperature=0.3,     # Slightly higher for better diversity
             top_p=0.9,
-            do_sample=True
+            do_sample=True,
+            repetition_penalty=1.1,  # Prevent repetitive text
+            pad_token_id=tokenizer.eos_token_id
         )
     
     response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
