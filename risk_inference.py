@@ -363,10 +363,10 @@ def analyze_text(model, tokenizer, unified: bool, categories: Dict, text: str, f
             text_type = categories.get('task_type', 'risk')
         
         # Analyze based on determined type
-        if text_type == "risk":
-            return analyze_risk(model, tokenizer, categories, text)
-        else:  # text_type == "pii"
-            return analyze_pii(model, tokenizer, categories, text)
+            if text_type == "risk":
+                return analyze_risk(model, tokenizer, categories, text)
+            else:  # text_type == "pii"
+                return analyze_pii(model, tokenizer, categories, text)
         
     except Exception as e:
         print(f"Error during analysis: {str(e)}")
@@ -422,11 +422,11 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
         # Format the categories
         categories_text = format_risk_categories_for_prompt(categories)
         
-        # Create a concise prompt for risk analysis
+        # Create a simple prompt for risk analysis
         messages = [
             {
                 "role": "user",
-                "content": f"Analyze this security risk finding:\n\n{categories_text}\n\nSecurity Risk Finding:\n{text}\n\nStep 1: Select ONE L2 category that best matches this finding\nStep 2: Select 1-3 macro risks from that L2 category that apply\n\nReturn JSON:\n{{\n  \"l2_category\": \"X. Category Name\",\n  \"macro_risks\": [\"Specific Risk 1\", \"Specific Risk 2\"]\n}}\n\nIMPORTANT: Always include specific macro risks from the selected L2 category."
+                "content": f"Categorize this security risk:\n\n{categories_text}\n\nRisk: {text}\n\nReturn only JSON:\n{{\n\"l2_category\": \"8. Manage IT Vulnerabilities & Patching\",\n\"macro_risks\": [\"Vulnerability assessment\", \"Patching Completeness\"]\n}}"
             }
         ]
         
@@ -439,11 +439,11 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
             outputs = model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs.get("attention_mask"),
-                max_new_tokens=256,  # Reduced for more focused responses
-                temperature=0.3,     # Slightly higher for better diversity
+                max_new_tokens=150,  # Shorter for JSON focus
+                temperature=0.1,     # Lower for more deterministic output
                 top_p=0.9,
                 do_sample=True,
-                repetition_penalty=1.1,  # Prevent repetitive text
+                repetition_penalty=1.1,
                 pad_token_id=tokenizer.eos_token_id,
                 eos_token_id=tokenizer.eos_token_id
             )
@@ -498,11 +498,11 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
     # Format the categories
     categories_text = format_pii_categories_for_prompt(categories)
     
-    # Create a concise prompt for PII analysis
+    # Create a simple prompt for PII analysis
     messages = [
         {
             "role": "user",
-            "content": f"Analyze this text for PII:\n\n{categories_text}\n\nText to analyze:\n{text}\n\nStep 1: Identify any PII present (SSN, Name, Email, Phone, etc.)\nStep 2: Select protection category using highest sensitivity rule\n\nReturn JSON:\n{{\n  \"pc_category\": \"PC0 or PC1 or PC3\",\n  \"pii_types\": [\"SSN\", \"Phone\"]\n}}\n\nIMPORTANT: Always include specific PII types found."
+            "content": f"Analyze for PII:\n\n{categories_text}\n\nText: {text}\n\nReturn only JSON:\n{{\n\"pc_category\": \"PC3\",\n\"pii_types\": [\"SSN\", \"Phone\", \"Name\"]\n}}"
         }
     ]
     
@@ -515,11 +515,11 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
         outputs = model.generate(
             input_ids=inputs["input_ids"],
             attention_mask=inputs.get("attention_mask"),
-            max_new_tokens=256,  # Reduced for more focused responses
-            temperature=0.3,     # Slightly higher for better diversity
+            max_new_tokens=150,  # Shorter for JSON focus
+            temperature=0.1,     # Lower for more deterministic output
             top_p=0.9,
             do_sample=True,
-            repetition_penalty=1.1,  # Prevent repetitive text
+            repetition_penalty=1.1,
             pad_token_id=tokenizer.eos_token_id,
             eos_token_id=tokenizer.eos_token_id
         )
@@ -736,7 +736,7 @@ Examples:
         print("\nAnalysis Result:")
         parsing_method = result.get("parsing_method", "json")
         if parsing_method == "text_fallback":
-            print("⚠️  Note: JSON parsing failed, using text fallback")
+            print("Note: JSON parsing failed, using text fallback")
             
         if result.get("type") == "risk":
             if result.get("success", False):
@@ -744,9 +744,9 @@ Examples:
                 print(f"L2 Category: {result.get('l2_category', 'Not identified')}")
                 print(f"Macro Risks: {', '.join(result.get('macro_risks', ['None']))}")
                 if parsing_method == "text_fallback":
-                    print(f"Parsing Method: Text extraction (JSON failed)")
+                    print(f"Parsing Method: Text extraction")
             else:
-                print("❌ Failed to analyze as security risk")
+                print("Failed to analyze as security risk")
                 print(f"Raw response: {result.get('raw_response', '')}")
         else:  # PII analysis
             if result.get("success", False):
@@ -754,9 +754,9 @@ Examples:
                 print(f"Protection Category: {result.get('pc_category', 'Not identified')}")
                 print(f"PII Types: {', '.join(result.get('pii_types', ['None']))}")
                 if parsing_method == "text_fallback":
-                    print(f"Parsing Method: Text extraction (JSON failed)")
+                    print(f"Parsing Method: Text extraction")
             else:
-                print("❌ Failed to analyze for PII")
+                print("Failed to analyze for PII")
                 print(f"Raw response: {result.get('raw_response', '')}")
         
         results.append(result)
