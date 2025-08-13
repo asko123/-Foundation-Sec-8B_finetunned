@@ -131,38 +131,52 @@ def filter_macro_risks_by_l2(l2_category: str, macro_risks: list, categories: Di
     if not valid_risks:
         return []
     
-    # Filter using simple string matching (exact and partial matches)
+    # Filter using improved string matching
     filtered_risks = []
     for risk in macro_risks:
         best_match = None
+        best_score = 0
         
         for valid_risk in valid_risks:
             risk_lower = risk.lower().strip()
             valid_lower = valid_risk.lower().strip()
             
-            # Exact match
+            # Exact match (highest priority)
             if risk_lower == valid_lower:
                 best_match = valid_risk
+                best_score = 100
                 break
             
             # Partial match (one contains the other)
             elif risk_lower in valid_lower or valid_lower in risk_lower:
-                best_match = valid_risk
-                break
+                if len(risk_lower) > 3 and len(valid_lower) > 3:  # Avoid short matches
+                    match_score = 80
+                    if match_score > best_score:
+                        best_match = valid_risk
+                        best_score = match_score
             
             # Word-based matching for compound terms
             risk_words = set(risk_lower.split())
             valid_words = set(valid_lower.split())
             
-            # If most words overlap, consider it a match
             if risk_words and valid_words:
                 overlap = len(risk_words & valid_words)
                 min_words = min(len(risk_words), len(valid_words))
-                if overlap >= max(1, min_words * 0.6):  # 60% word overlap
-                    best_match = valid_risk
-                    break
+                max_words = max(len(risk_words), len(valid_words))
+                
+                # Calculate match score based on overlap
+                if min_words > 0:
+                    overlap_ratio = overlap / min_words
+                    coverage_ratio = overlap / max_words
+                    
+                    # Require significant overlap (at least 70% of smaller set)
+                    if overlap_ratio >= 0.7 and coverage_ratio >= 0.5:
+                        match_score = int(overlap_ratio * coverage_ratio * 60)
+                        if match_score > best_score:
+                            best_match = valid_risk
+                            best_score = match_score
         
-        if best_match:
+        if best_match and best_score >= 50:  # Only include strong matches
             filtered_risks.append(best_match)
     
     return list(set(filtered_risks))  # Remove duplicates
@@ -571,11 +585,11 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
         # Format the categories
         categories_text = format_risk_categories_for_prompt(categories)
         
-        # Create a simple prompt for risk analysis
+        # Create a specific prompt for risk analysis that emphasizes filtering
         messages = [
             {
-                "role": "user",
-                "content": f"Categorize this security risk:\n\n{categories_text}\n\nRisk: {text}\n\nReturn only JSON:\n{{\n\"l2_category\": \"8. Manage IT Vulnerabilities & Patching\",\n\"macro_risks\": [\"Vulnerability assessment\", \"Patching Completeness\"]\n}}"
+                "role": "user", 
+                "content": f"Categorize this security risk and select ONLY the relevant macro risks for the identified L2 category:\n\n{categories_text}\n\nRisk: {text}\n\nIMPORTANT: Only return macro risks that belong to the identified L2 category. Do not include risks from other categories.\n\nReturn only JSON:\n{{\n\"l2_category\": \"8. Manage IT Vulnerabilities & Patching\",\n\"macro_risks\": [\"Vulnerability assessment\", \"Patching Completeness\"]\n}}"
             }
         ]
         
@@ -631,6 +645,11 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
                     result.get("macro_risks", []), 
                     categories
                 )
+                
+                # Safety cap: limit to maximum 5 macro risks
+                if len(filtered_risks) > 5:
+                    filtered_risks = filtered_risks[:5]
+                
                 return {
                     "success": True,
                     "type": "risk",
@@ -646,6 +665,11 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
                     result.get("macro_risks", []), 
                     categories
                 )
+                
+                # Safety cap: limit to maximum 5 macro risks
+                if len(filtered_risks) > 5:
+                    filtered_risks = filtered_risks[:5]
+                
                 return {
                     "success": True,
                     "type": "risk",
@@ -655,11 +679,17 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
         except (json.JSONDecodeError, AttributeError):
             # Fallback: Try to extract information manually from text
             fallback_result = parse_risk_response_as_text(response.strip(), categories)
+            
+            # Apply safety cap to fallback results too
+            fallback_risks = fallback_result.get("macro_risks", [])
+            if len(fallback_risks) > 5:
+                fallback_risks = fallback_risks[:5]
+            
             return {
                 "success": fallback_result["success"],
                 "type": "risk",
                 "l2_category": fallback_result.get("l2_category", "Could not determine"),
-                "macro_risks": fallback_result.get("macro_risks", []),
+                "macro_risks": fallback_risks,
                 "raw_response": response.strip(),
                 "parsing_method": "text_fallback"
             }
