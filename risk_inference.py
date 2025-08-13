@@ -94,6 +94,22 @@ def load_inference_model(pickle_path: str) -> Tuple:
         traceback.print_exc()
         return None, None, None, None
 
+def get_model_device(model) -> str:
+    """Get the device of the model."""
+    try:
+        return str(next(model.parameters()).device)
+    except StopIteration:
+        return "cpu"  # fallback if model has no parameters
+
+def prepare_inputs_for_model(tokenizer, text: str, model):
+    """Prepare tokenized inputs and move them to the same device as the model."""
+    inputs = tokenizer(text, return_tensors="pt")
+    device = get_model_device(model)
+    
+    # Move all tensors to the model's device
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    return inputs
+
 def format_chat_messages(messages: List[Dict], tokenizer) -> str:
     """
     Format chat messages for models, with fallback for tokenizers without chat templates.
@@ -228,9 +244,9 @@ def detect_text_type(model, tokenizer, categories: Dict, text: str) -> str:
         }
     ]
     
-    # Create inputs without moving to device (model is already on the correct device)
+    # Create inputs and move to same device as model
     formatted_prompt = format_chat_messages(messages, tokenizer)
-    inputs = tokenizer(formatted_prompt, return_tensors="pt")
+    inputs = prepare_inputs_for_model(tokenizer, formatted_prompt, model)
     
     # Generate the response
     with torch.no_grad():
@@ -279,7 +295,7 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
         
         # Generate response
         formatted_prompt = format_chat_messages(messages, tokenizer)
-        inputs = tokenizer(formatted_prompt, return_tensors="pt")
+        inputs = prepare_inputs_for_model(tokenizer, formatted_prompt, model)
         
         import torch
         with torch.no_grad():
@@ -335,9 +351,9 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
         }
     ]
     
-    # Create inputs without moving to device
+    # Create inputs and move to same device as model
     formatted_prompt = format_chat_messages(messages, tokenizer)
-    inputs = tokenizer(formatted_prompt, return_tensors="pt")
+    inputs = prepare_inputs_for_model(tokenizer, formatted_prompt, model)
     
     # Generate the response
     with torch.no_grad():
