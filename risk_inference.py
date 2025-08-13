@@ -195,6 +195,10 @@ def parse_risk_response_as_text(response: str, categories: Dict = None) -> Dict:
         r"risk[:\s]*([A-Z][^,\n]+)",
         r"-\s*([A-Z][^,\n]+)",  # Bullet points
         r"\d+\.\s*([A-Z][^,\n]+)",  # Numbered lists
+        r"issues?[:\s]*([^.!?]+)",  # Issues: pattern
+        r"include[s]?[:\s]*([^.!?]+)",  # Include/includes: pattern
+        r"involving?[:\s]*([^.!?]+)",  # Involving: pattern
+        r"with[:\s]*([A-Z][^.!?]+)",  # With: pattern
     ]
     
     extracted_risks = []
