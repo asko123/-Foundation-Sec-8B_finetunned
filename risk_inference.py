@@ -103,12 +103,88 @@ def get_model_device(model) -> str:
 
 def prepare_inputs_for_model(tokenizer, text: str, model):
     """Prepare tokenized inputs and move them to the same device as the model."""
-    inputs = tokenizer(text, return_tensors="pt")
+    inputs = tokenizer(
+        text, 
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=2048,
+        return_attention_mask=True
+    )
     device = get_model_device(model)
     
     # Move all tensors to the model's device
     inputs = {k: v.to(device) for k, v in inputs.items()}
     return inputs
+
+def parse_risk_response_as_text(response: str) -> Dict:
+    """Parse risk analysis response as plain text when JSON parsing fails."""
+    import re
+    
+    result = {"success": False, "l2_category": None, "macro_risks": []}
+    
+    # Try to find L2 category patterns
+    l2_patterns = [
+        r"l2[_\s]*category[:\s]*[\"']?([^\"'\n]+)[\"']?",
+        r"category[:\s]*[\"']?(\d+\.?\s*[^\"'\n]+)[\"']?",
+        r"(\d+\.?\s*[A-Z][^.\n]+)",
+    ]
+    
+    for pattern in l2_patterns:
+        match = re.search(pattern, response, re.IGNORECASE)
+        if match:
+            result["l2_category"] = match.group(1).strip()
+            result["success"] = True
+            break
+    
+    # Try to find macro risks
+    risk_patterns = [
+        r"macro[_\s]*risks?[:\s]*\[([^\]]+)\]",
+        r"risks?[:\s]*\[([^\]]+)\]",
+        r"risks?[:\s]*[\"']([^\"']+)[\"']",
+    ]
+    
+    for pattern in risk_patterns:
+        matches = re.findall(pattern, response, re.IGNORECASE)
+        for match in matches:
+            # Split by commas and clean up
+            risks = [risk.strip().strip('"\'') for risk in match.split(',')]
+            result["macro_risks"].extend([r for r in risks if r])
+    
+    return result
+
+def parse_pii_response_as_text(response: str) -> Dict:
+    """Parse PII analysis response as plain text when JSON parsing fails."""
+    import re
+    
+    result = {"success": False, "pc_category": None, "pii_types": []}
+    
+    # Try to find PC category
+    pc_patterns = [
+        r"pc[_\s]*category[:\s]*[\"']?(PC[0-3])[\"']?",
+        r"(PC[0-3])",
+    ]
+    
+    for pattern in pc_patterns:
+        match = re.search(pattern, response, re.IGNORECASE)
+        if match:
+            result["pc_category"] = match.group(1).upper()
+            result["success"] = True
+            break
+    
+    # Try to find PII types
+    pii_patterns = [
+        r"pii[_\s]*types?[:\s]*\[([^\]]+)\]",
+        r"types?[:\s]*\[([^\]]+)\]",
+    ]
+    
+    for pattern in pii_patterns:
+        matches = re.findall(pattern, response, re.IGNORECASE)
+        for match in matches:
+            types = [pii_type.strip().strip('"\'') for pii_type in match.split(',')]
+            result["pii_types"].extend([t for t in types if t])
+    
+    return result
 
 def format_chat_messages(messages: List[Dict], tokenizer) -> str:
     """
@@ -278,11 +354,14 @@ def detect_text_type(model, tokenizer, categories: Dict, text: str) -> str:
     # Generate the response
     with torch.no_grad():
         outputs = model.generate(
-            inputs["input_ids"],
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs.get("attention_mask"),
             max_new_tokens=50,
             temperature=0.1,
             top_p=0.9,
-            do_sample=True
+            do_sample=True,
+            pad_token_id=tokenizer.eos_token_id,
+            eos_token_id=tokenizer.eos_token_id
         )
     
     response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
@@ -315,13 +394,15 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
         import torch
         with torch.no_grad():
             outputs = model.generate(
-                inputs["input_ids"],
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs.get("attention_mask"),
                 max_new_tokens=256,  # Reduced for more focused responses
                 temperature=0.3,     # Slightly higher for better diversity
                 top_p=0.9,
                 do_sample=True,
                 repetition_penalty=1.1,  # Prevent repetitive text
-                pad_token_id=tokenizer.eos_token_id
+                pad_token_id=tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id
             )
         
         response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
@@ -349,10 +430,15 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
                     "macro_risks": result.get("macro_risks", [])
                 }
         except (json.JSONDecodeError, AttributeError):
+            # Fallback: Try to extract information manually from text
+            fallback_result = parse_risk_response_as_text(response.strip())
             return {
-                "success": False,
-                "error": "Failed to parse model response as JSON",
-                "raw_response": response.strip()
+                "success": fallback_result["success"],
+                "type": "risk",
+                "l2_category": fallback_result.get("l2_category", "Could not determine"),
+                "macro_risks": fallback_result.get("macro_risks", []),
+                "raw_response": response.strip(),
+                "parsing_method": "text_fallback"
             }
             
     except Exception as e:
@@ -384,13 +470,15 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
     # Generate the response
     with torch.no_grad():
         outputs = model.generate(
-            inputs["input_ids"],
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs.get("attention_mask"),
             max_new_tokens=256,  # Reduced for more focused responses
             temperature=0.3,     # Slightly higher for better diversity
             top_p=0.9,
             do_sample=True,
             repetition_penalty=1.1,  # Prevent repetitive text
-            pad_token_id=tokenizer.eos_token_id
+            pad_token_id=tokenizer.eos_token_id,
+            eos_token_id=tokenizer.eos_token_id
         )
     
     response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
@@ -411,11 +499,15 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
         except json.JSONDecodeError:
             pass
     
-    # If we couldn't parse JSON, return the raw response
+    # If we couldn't parse JSON, try text fallback
+    fallback_result = parse_pii_response_as_text(response)
     return {
         "type": "pii",
-        "success": False,
-        "raw_response": response
+        "success": fallback_result["success"],
+        "pc_category": fallback_result.get("pc_category", "Could not determine"),
+        "pii_types": fallback_result.get("pii_types", []),
+        "raw_response": response,
+        "parsing_method": "text_fallback"
     }
 
 def batch_analyze(model, tokenizer, unified: bool, categories: Dict, texts: List[str]) -> List[Dict]:
@@ -596,21 +688,29 @@ Examples:
         
         # Pretty print the result
         print("\nAnalysis Result:")
+        parsing_method = result.get("parsing_method", "json")
+        if parsing_method == "text_fallback":
+            print("⚠️  Note: JSON parsing failed, using text fallback")
+            
         if result.get("type") == "risk":
             if result.get("success", False):
                 print(f"Type: Security Risk")
                 print(f"L2 Category: {result.get('l2_category', 'Not identified')}")
                 print(f"Macro Risks: {', '.join(result.get('macro_risks', ['None']))}")
+                if parsing_method == "text_fallback":
+                    print(f"Parsing Method: Text extraction (JSON failed)")
             else:
-                print("Failed to analyze as security risk")
+                print("❌ Failed to analyze as security risk")
                 print(f"Raw response: {result.get('raw_response', '')}")
         else:  # PII analysis
             if result.get("success", False):
                 print(f"Type: PII")
                 print(f"Protection Category: {result.get('pc_category', 'Not identified')}")
                 print(f"PII Types: {', '.join(result.get('pii_types', ['None']))}")
+                if parsing_method == "text_fallback":
+                    print(f"Parsing Method: Text extraction (JSON failed)")
             else:
-                print("Failed to analyze for PII")
+                print("❌ Failed to analyze for PII")
                 print(f"Raw response: {result.get('raw_response', '')}")
         
         results.append(result)
