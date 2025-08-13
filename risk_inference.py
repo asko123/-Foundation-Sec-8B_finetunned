@@ -363,10 +363,10 @@ def analyze_text(model, tokenizer, unified: bool, categories: Dict, text: str, f
             text_type = categories.get('task_type', 'risk')
         
         # Analyze based on determined type
-            if text_type == "risk":
-                return analyze_risk(model, tokenizer, categories, text)
-            else:  # text_type == "pii"
-                return analyze_pii(model, tokenizer, categories, text)
+        if text_type == "risk":
+            return analyze_risk(model, tokenizer, categories, text)
+        else:  # text_type == "pii"
+            return analyze_pii(model, tokenizer, categories, text)
         
     except Exception as e:
         print(f"Error during analysis: {str(e)}")
@@ -571,6 +571,15 @@ def batch_analyze(model, tokenizer, unified: bool, categories: Dict, texts: List
     
     for i, text in enumerate(tqdm(texts, desc="Analyzing texts")):
         result = analyze_text(model, tokenizer, unified, categories, text, force_type)
+        
+        # Safety check - ensure result is a valid dictionary
+        if result is None:
+            result = {
+                "success": False,
+                "error": "Analysis function returned None",
+                "type": "unknown"
+            }
+        
         result["input_text"] = text
         results.append(result)
         
@@ -730,6 +739,15 @@ Examples:
         if args.force_type:
             print(f"Forcing analysis as: {args.force_type}")
         result = analyze_text(model, tokenizer, unified, categories, text, args.force_type)
+        
+        # Safety check - ensure result is a valid dictionary
+        if result is None:
+            result = {
+                "success": False,
+                "error": "Analysis function returned None",
+                "type": "unknown"
+            }
+        
         result["input_text"] = text
         
         # Pretty print the result
