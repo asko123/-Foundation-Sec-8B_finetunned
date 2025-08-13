@@ -117,7 +117,57 @@ def prepare_inputs_for_model(tokenizer, text: str, model):
     inputs = {k: v.to(device) for k, v in inputs.items()}
     return inputs
 
-def parse_risk_response_as_text(response: str) -> Dict:
+def filter_macro_risks_by_l2(l2_category: str, macro_risks: list, categories: Dict) -> list:
+    """Filter macro risks to only include those valid for the given L2 category."""
+    if not l2_category or not macro_risks or not categories or "macro_risks" not in categories:
+        return macro_risks
+    
+    # Extract L2 key from category (e.g., "6. Identity & Access Management" -> "6")
+    l2_key = l2_category.split('.')[0].strip()
+    
+    # Get valid macro risks for this L2 category
+    valid_risks = categories["macro_risks"].get(l2_key, [])
+    
+    if not valid_risks:
+        return []
+    
+    # Filter using simple string matching (exact and partial matches)
+    filtered_risks = []
+    for risk in macro_risks:
+        best_match = None
+        
+        for valid_risk in valid_risks:
+            risk_lower = risk.lower().strip()
+            valid_lower = valid_risk.lower().strip()
+            
+            # Exact match
+            if risk_lower == valid_lower:
+                best_match = valid_risk
+                break
+            
+            # Partial match (one contains the other)
+            elif risk_lower in valid_lower or valid_lower in risk_lower:
+                best_match = valid_risk
+                break
+            
+            # Word-based matching for compound terms
+            risk_words = set(risk_lower.split())
+            valid_words = set(valid_lower.split())
+            
+            # If most words overlap, consider it a match
+            if risk_words and valid_words:
+                overlap = len(risk_words & valid_words)
+                min_words = min(len(risk_words), len(valid_words))
+                if overlap >= max(1, min_words * 0.6):  # 60% word overlap
+                    best_match = valid_risk
+                    break
+        
+        if best_match:
+            filtered_risks.append(best_match)
+    
+    return list(set(filtered_risks))  # Remove duplicates
+
+def parse_risk_response_as_text(response: str, categories: Dict = None) -> Dict:
     """Parse risk analysis response as plain text when JSON parsing fails."""
     import re
     
@@ -147,18 +197,70 @@ def parse_risk_response_as_text(response: str) -> Dict:
         r"\d+\.\s*([A-Z][^,\n]+)",  # Numbered lists
     ]
     
+    extracted_risks = []
     for pattern in risk_patterns:
         matches = re.findall(pattern, response, re.IGNORECASE)
         for match in matches:
             if ',' in match:
                 # Split by commas and clean up
                 risks = [risk.strip().strip('"\'') for risk in match.split(',')]
-                result["macro_risks"].extend([r for r in risks if r and len(r) > 3])
+                extracted_risks.extend([r for r in risks if r and len(r) > 3])
             else:
                 # Single risk
                 clean_risk = match.strip().strip('"\'')
                 if clean_risk and len(clean_risk) > 3:
-                    result["macro_risks"].append(clean_risk)
+                    extracted_risks.append(clean_risk)
+    
+    # Filter macro risks based on the identified L2 category
+    if result["l2_category"] and categories and "macro_risks" in categories:
+        # Extract L2 key from category (e.g., "6. Identity & Access Management" -> "6")
+        l2_key = result["l2_category"].split('.')[0].strip()
+        
+        # Get valid macro risks for this L2 category
+        valid_risks = categories["macro_risks"].get(l2_key, [])
+        
+        if valid_risks:
+            # Filter extracted risks to only include those valid for this L2 category
+            # Use simple string matching to handle variations
+            filtered_risks = []
+            for extracted_risk in extracted_risks:
+                best_match = None
+                
+                for valid_risk in valid_risks:
+                    risk_lower = extracted_risk.lower().strip()
+                    valid_lower = valid_risk.lower().strip()
+                    
+                    # Exact match
+                    if risk_lower == valid_lower:
+                        best_match = valid_risk
+                        break
+                    
+                    # Partial match (one contains the other)
+                    elif risk_lower in valid_lower or valid_lower in risk_lower:
+                        best_match = valid_risk
+                        break
+                    
+                    # Word-based matching for compound terms
+                    risk_words = set(risk_lower.split())
+                    valid_words = set(valid_lower.split())
+                    
+                    # If most words overlap, consider it a match
+                    if risk_words and valid_words:
+                        overlap = len(risk_words & valid_words)
+                        min_words = min(len(risk_words), len(valid_words))
+                        if overlap >= max(1, min_words * 0.6):  # 60% word overlap
+                            best_match = valid_risk
+                            break
+                
+                if best_match:
+                    filtered_risks.append(best_match)
+            
+            result["macro_risks"] = list(set(filtered_risks))  # Remove duplicates
+        else:
+            result["macro_risks"] = []
+    else:
+        # If no L2 category found or no filtering possible, use all extracted risks
+        result["macro_risks"] = list(set(extracted_risks))
     
     return result
 
@@ -406,10 +508,10 @@ def analyze_text(model, tokenizer, unified: bool, categories: Dict, text: str, f
             text_type = categories.get('task_type', 'risk')
         
         # Analyze based on determined type
-        if text_type == "risk":
-            return analyze_risk(model, tokenizer, categories, text)
-        else:  # text_type == "pii"
-            return analyze_pii(model, tokenizer, categories, text)
+            if text_type == "risk":
+                return analyze_risk(model, tokenizer, categories, text)
+            else:  # text_type == "pii"
+                return analyze_pii(model, tokenizer, categories, text)
         
     except Exception as e:
         print(f"Error during analysis: {str(e)}")
@@ -502,24 +604,36 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
             if json_match:
                 json_str = json_match.group(1)
                 result = json.loads(json_str)
+                # Filter macro risks to only valid ones for the L2 category
+                filtered_risks = filter_macro_risks_by_l2(
+                    result.get("l2_category"), 
+                    result.get("macro_risks", []), 
+                    categories
+                )
                 return {
                     "success": True,
                     "type": "risk",
                     "l2_category": result.get("l2_category"),
-                    "macro_risks": result.get("macro_risks", [])
+                    "macro_risks": filtered_risks
                 }
             else:
                 # If no JSON found, try to parse the entire response
                 result = json.loads(response)
+                # Filter macro risks to only valid ones for the L2 category
+                filtered_risks = filter_macro_risks_by_l2(
+                    result.get("l2_category"), 
+                    result.get("macro_risks", []), 
+                    categories
+                )
                 return {
                     "success": True,
                     "type": "risk",
                     "l2_category": result.get("l2_category"),
-                    "macro_risks": result.get("macro_risks", [])
+                    "macro_risks": filtered_risks
                 }
         except (json.JSONDecodeError, AttributeError):
             # Fallback: Try to extract information manually from text
-            fallback_result = parse_risk_response_as_text(response.strip())
+            fallback_result = parse_risk_response_as_text(response.strip(), categories)
             return {
                 "success": fallback_result["success"],
                 "type": "risk",
