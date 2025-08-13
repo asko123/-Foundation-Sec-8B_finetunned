@@ -6,7 +6,7 @@
 set -e
 
 TRAINING_DATA=""
-OUTPUT_DIR="./training_output"
+OUTPUT_DIR="./h100_output"
 ACTION=""
 
 show_help() {
@@ -21,7 +21,7 @@ show_help() {
     echo ""
     echo "Options:"
     echo "  --data <path>       Training data path"
-    echo "  --output <path>     Output directory (default: ./training_output)"
+    echo "  --output <path>     Output directory (default: ./h100_output")"
     echo ""
     echo "Examples:"
     echo "  $0 start --data ./my_data           # Start training"
