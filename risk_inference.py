@@ -512,10 +512,10 @@ def analyze_text(model, tokenizer, unified: bool, categories: Dict, text: str, f
             text_type = categories.get('task_type', 'risk')
         
         # Analyze based on determined type
-            if text_type == "risk":
-                return analyze_risk(model, tokenizer, categories, text)
-            else:  # text_type == "pii"
-                return analyze_pii(model, tokenizer, categories, text)
+        if text_type == "risk":
+            return analyze_risk(model, tokenizer, categories, text)
+        else:  # text_type == "pii"
+            return analyze_pii(model, tokenizer, categories, text)
         
     except Exception as e:
         print(f"Error during analysis: {str(e)}")
@@ -582,10 +582,14 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
         # Generate response
         formatted_prompt = format_chat_messages(messages, tokenizer)
         
-
         inputs = prepare_inputs_for_model(tokenizer, formatted_prompt, model)
         
         import torch
+        
+        # Ensure pad_token_id is set properly
+        if tokenizer.pad_token_id is None:
+            tokenizer.pad_token_id = tokenizer.eos_token_id
+            
         with torch.no_grad():
             outputs = model.generate(
                 input_ids=inputs["input_ids"],
@@ -595,11 +599,24 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
                 top_p=0.9,
                 do_sample=True,
                 repetition_penalty=1.1,
-                pad_token_id=tokenizer.eos_token_id,
-                eos_token_id=tokenizer.eos_token_id
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                use_cache=True
             )
         
         response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+        
+        # Check if response is empty or just whitespace
+        if not response.strip():
+            return {
+                "success": False,
+                "type": "risk",
+                "error": "Model returned empty response",
+                "l2_category": "Could not determine",
+                "macro_risks": [],
+                "raw_response": response,
+                "parsing_method": "empty_response"
+            }
         
         try:
             # Try to extract JSON from the response
@@ -672,9 +689,12 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
     # Create inputs and move to same device as model
     formatted_prompt = format_chat_messages(messages, tokenizer)
     
-
     inputs = prepare_inputs_for_model(tokenizer, formatted_prompt, model)
     
+    # Ensure pad_token_id is set properly
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+        
     # Generate the response
     with torch.no_grad():
         outputs = model.generate(
@@ -685,11 +705,24 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
             top_p=0.9,
             do_sample=True,
             repetition_penalty=1.1,
-            pad_token_id=tokenizer.eos_token_id,
-            eos_token_id=tokenizer.eos_token_id
+            pad_token_id=tokenizer.pad_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+            use_cache=True
         )
     
     response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+    
+    # Check if response is empty or just whitespace
+    if not response.strip():
+        return {
+            "success": False,
+            "type": "pii",
+            "error": "Model returned empty response",
+            "pc_category": "Could not determine",
+            "pii_types": [],
+            "raw_response": response,
+            "parsing_method": "empty_response"
+        }
     
     # Try to parse JSON from the response
     json_match = re.search(r'({.*?})', response.replace('\n', ' '), re.DOTALL)
