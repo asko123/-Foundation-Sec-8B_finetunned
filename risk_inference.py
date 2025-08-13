@@ -181,6 +181,122 @@ def filter_macro_risks_by_l2(l2_category: str, macro_risks: list, categories: Di
     
     return list(set(filtered_risks))  # Remove duplicates
 
+def determine_pii_category_with_precedence(text: str) -> str:
+    """
+    Determine PII category with proper precedence: PC3 > PC1 > PC0.
+    Higher categories take precedence when multiple indicators are present.
+    """
+    try:
+        # Import constants from the constants file
+        from risk_fine_tuner_constants import PII_KEYWORDS
+        text_lower = text.lower()
+        
+        # Check for PC3 indicators (highest precedence)
+        pc3_keywords = PII_KEYWORDS.get("PC3", [])
+        if any(keyword in text_lower for keyword in pc3_keywords):
+            return "PC3"
+        
+        # Check for PC1 indicators (medium precedence)  
+        pc1_keywords = PII_KEYWORDS.get("PC1", [])
+        if any(keyword in text_lower for keyword in pc1_keywords):
+            return "PC1"
+        
+        # Check for PC0 indicators (lowest precedence)
+        pc0_keywords = PII_KEYWORDS.get("PC0", [])
+        if any(keyword in text_lower for keyword in pc0_keywords):
+            return "PC0"
+        
+        # Default to PC0 if no clear indicators found
+        return "PC0"
+        
+    except ImportError:
+        # Fallback if constants are not available
+        text_lower = text.lower()
+        
+        # PC3 indicators (highest priority)
+        pc3_indicators = [
+            'ssn', 'social security', 'financial', 'bank', 'credit card', 
+            'health', 'medical', 'password', 'credential', 'biometric', 
+            'national id', 'driver license', 'passport'
+        ]
+        
+        # PC1 indicators
+        pc1_indicators = [
+            'name', 'contact', 'business email', 'job title', 'company', 
+            'department', 'customer id', 'personal', 'private'
+        ]
+        
+        # PC0 indicators
+        pc0_indicators = [
+            'public', 'marketing', 'documentation', 'open data', 
+            'website', 'brochure', 'general'
+        ]
+        
+        # Apply precedence: PC3 > PC1 > PC0
+        if any(indicator in text_lower for indicator in pc3_indicators):
+            return "PC3"
+        elif any(indicator in text_lower for indicator in pc1_indicators):
+            return "PC1"
+        elif any(indicator in text_lower for indicator in pc0_indicators):
+            return "PC0"
+        else:
+            return "PC0"  # Default
+
+def validate_and_filter_pii_types(pii_types: list) -> list:
+    """Validate PII types against the standard list and filter out invalid ones."""
+    try:
+        from risk_fine_tuner_constants import PII_TYPES
+        valid_types = PII_TYPES
+    except ImportError:
+        # Fallback list if constants not available
+        valid_types = [
+            "Name", "Email", "Phone", "Address", "SSN", "Financial", "Health", 
+            "Credentials", "Biometric", "National ID", "DOB", "Gender",
+            "Location", "IP Address", "Device ID", "Customer ID", "Employment"
+        ]
+    
+    filtered_types = []
+    for pii_type in pii_types:
+        pii_type_clean = pii_type.strip()
+        
+        # Direct match
+        if pii_type_clean in valid_types:
+            if pii_type_clean not in filtered_types:
+                filtered_types.append(pii_type_clean)
+        else:
+            # Partial match for variations
+            for valid_type in valid_types:
+                if valid_type.lower() in pii_type_clean.lower() and valid_type not in filtered_types:
+                    filtered_types.append(valid_type)
+                    break
+    
+    return filtered_types
+
+def apply_pii_precedence_from_types(current_category: str, pii_types: list) -> str:
+    """
+    Apply precedence rules based on detected PII types.
+    If high-sensitivity PII types are detected, upgrade the category.
+    """
+    # High sensitivity PII types that force PC3
+    pc3_types = ["SSN", "Financial", "Health", "Credentials", "Biometric", "National ID"]
+    
+    # Medium sensitivity PII types that force at least PC1  
+    pc1_types = ["Name", "Email", "Phone", "Address", "DOB", "Customer ID", "Employment"]
+    
+    # Check if any PC3 types are present
+    if any(pii_type in pc3_types for pii_type in pii_types):
+        return "PC3"
+    
+    # Check if any PC1 types are present
+    if any(pii_type in pc1_types for pii_type in pii_types):
+        # Upgrade from PC0 to PC1 if needed
+        if current_category == "PC0":
+            return "PC1"
+        return current_category
+    
+    # No significant PII types found, return current category
+    return current_category
+
 def parse_risk_response_as_text(response: str, categories: Dict = None) -> Dict:
     """Parse risk analysis response as plain text when JSON parsing fails."""
     import re
@@ -297,51 +413,19 @@ def parse_pii_response_as_text(response: str) -> Dict:
         r"classification[:\s]*[\"']?(PC[0-3])[\"']?",
     ]
     
-    # If no explicit PC category found, infer from content
-    if not any(re.search(pattern, response, re.IGNORECASE) for pattern in pc_patterns):
-        response_lower = response.lower()
-        
-        # Check for PC3 indicators (highest priority)
-        pc3_indicators = [
-            'confidential', 'sensitive', 'ssn', 'social security', 'credit card', 
-            'financial', 'medical', 'health', 'password', 'credential', 'biometric'
-        ]
-        
-        # Check for PC1 indicators
-        pc1_indicators = [
-            'internal', 'personal', 'private', 'name', 'email', 'phone', 
-            'address', 'customer', 'employee', 'contact'
-        ]
-        
-        # Check for PC0 indicators (check first for negative indicators)
-        pc0_indicators = [
-            'no sensitive', 'no confidential', 'no pii', 'no personal', 'public only', 
-            'marketing only', 'general information', 'not sensitive', 'not confidential'
-        ]
-        
-        # Check for explicit PC0 terms
-        pc0_terms = ['public', 'marketing', 'general', 'open']
-        
-        # Check PC0 first (negative indicators have priority)
-        if any(indicator in response_lower for indicator in pc0_indicators):
-            result["pc_category"] = "PC0"
-            result["success"] = True
-        elif any(indicator in response_lower for indicator in pc3_indicators):
-            result["pc_category"] = "PC3"
-            result["success"] = True
-        elif any(indicator in response_lower for indicator in pc1_indicators):
-            result["pc_category"] = "PC1" 
-            result["success"] = True
-        elif any(term in response_lower for term in pc0_terms):
-            result["pc_category"] = "PC0"
-            result["success"] = True
-    
+    # First try explicit PC patterns
     for pattern in pc_patterns:
         match = re.search(pattern, response, re.IGNORECASE)
         if match:
             result["pc_category"] = match.group(1).upper()
             result["success"] = True
             break
+    
+    # If no explicit PC category found, infer from content with proper precedence
+    if not result["pc_category"]:
+        result["pc_category"] = determine_pii_category_with_precedence(response)
+        if result["pc_category"]:
+            result["success"] = True
     
     # Try to find PII types with better patterns
     pii_patterns = [
@@ -387,23 +471,8 @@ def parse_pii_response_as_text(response: str) -> Dict:
             if pii_type not in result["pii_types"]:
                 result["pii_types"].append(pii_type)
     
-    # Clean up and deduplicate results
-    valid_pii_types = ['SSN', 'Name', 'Email', 'Phone', 'Address', 'Financial', 'Health', 'Credentials', 'National ID', 'DOB', 'Customer ID']
-    cleaned_types = []
-    
-    for pii_type in result["pii_types"]:
-        # Check if it's a valid PII type or contains valid PII type
-        pii_type_clean = pii_type.strip()
-        if pii_type_clean in valid_pii_types:
-            if pii_type_clean not in cleaned_types:
-                cleaned_types.append(pii_type_clean)
-        else:
-            # Check if any valid PII type is mentioned in this text
-            for valid_type in valid_pii_types:
-                if valid_type.lower() in pii_type_clean.lower() and valid_type not in cleaned_types:
-                    cleaned_types.append(valid_type)
-    
-    result["pii_types"] = cleaned_types
+    # Clean up and validate PII types
+    result["pii_types"] = validate_and_filter_pii_types(result["pii_types"])
     return result
 
 def format_chat_messages(messages: List[Dict], tokenizer) -> str:
@@ -708,11 +777,11 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
     # Format the categories
     categories_text = format_pii_categories_for_prompt(categories)
     
-    # Create a simple prompt for PII analysis
+    # Create an improved prompt for PII analysis with precedence rules
     messages = [
         {
             "role": "user",
-            "content": f"Analyze for PII:\n\n{categories_text}\n\nText: {text}\n\nReturn only JSON:\n{{\n\"pc_category\": \"PC3\",\n\"pii_types\": [\"SSN\", \"Phone\", \"Name\"]\n}}"
+            "content": f"Analyze this text for PII and classify using protection categories with proper precedence:\n\n{categories_text}\n\nText: {text}\n\nIMPORTANT PRECEDENCE RULES:\n- PC3 (Confidential) takes precedence over PC1 and PC0\n- PC1 (Internal) takes precedence over PC0\n- If ANY highly sensitive PII (SSN, Financial, Health, Credentials) is found, use PC3\n- If ANY personal PII (Name, Email, Phone, Address) is found, use at least PC1\n- Only use PC0 for truly public information with no PII\n\nReturn only JSON:\n{{\n\"pc_category\": \"PC3\",\n\"pii_types\": [\"SSN\", \"Phone\", \"Name\"]\n}}"
         }
     ]
     
@@ -760,11 +829,24 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
         try:
             json_str = json_match.group(1)
             result = json.loads(json_str)
+            
+            # Validate and apply precedence to PC category
+            pc_category = result.get("pc_category", "")
+            if pc_category not in ["PC0", "PC1", "PC3"]:
+                # If invalid category, determine from content with precedence
+                pc_category = determine_pii_category_with_precedence(text)
+            
+            # Validate and filter PII types
+            pii_types = validate_and_filter_pii_types(result.get("pii_types", []))
+            
+            # Apply final precedence check based on detected PII types
+            final_pc_category = apply_pii_precedence_from_types(pc_category, pii_types)
+            
             return {
                 "type": "pii",
                 "success": True,
-                "pc_category": result.get("pc_category", ""),
-                "pii_types": result.get("pii_types", []),
+                "pc_category": final_pc_category,
+                "pii_types": pii_types,
                 "raw_response": response
             }
         except json.JSONDecodeError:
@@ -772,11 +854,19 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
     
     # If we couldn't parse JSON, try text fallback
     fallback_result = parse_pii_response_as_text(response)
+    
+    # Apply precedence rules to fallback results too
+    fallback_pc = fallback_result.get("pc_category", "PC0")
+    fallback_types = fallback_result.get("pii_types", [])
+    
+    # Apply final precedence check
+    final_pc_category = apply_pii_precedence_from_types(fallback_pc, fallback_types)
+    
     return {
         "type": "pii",
         "success": fallback_result["success"],
-        "pc_category": fallback_result.get("pc_category", "Could not determine"),
-        "pii_types": fallback_result.get("pii_types", []),
+        "pc_category": final_pc_category,
+        "pii_types": fallback_types,
         "raw_response": response,
         "parsing_method": "text_fallback"
     }
