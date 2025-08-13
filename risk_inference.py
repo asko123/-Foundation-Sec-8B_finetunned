@@ -351,6 +351,7 @@ def analyze_text(model, tokenizer, unified: bool, categories: Dict, text: str, f
     try:
         import torch
         
+
         # Determine analysis type
         if force_type:
             # Use forced type
@@ -432,6 +433,8 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
         
         # Generate response
         formatted_prompt = format_chat_messages(messages, tokenizer)
+        
+
         inputs = prepare_inputs_for_model(tokenizer, formatted_prompt, model)
         
         import torch
@@ -508,6 +511,8 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
     
     # Create inputs and move to same device as model
     formatted_prompt = format_chat_messages(messages, tokenizer)
+    
+
     inputs = prepare_inputs_for_model(tokenizer, formatted_prompt, model)
     
     # Generate the response
