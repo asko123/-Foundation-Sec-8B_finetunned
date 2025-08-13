@@ -137,19 +137,28 @@ def parse_risk_response_as_text(response: str) -> Dict:
             result["success"] = True
             break
     
-    # Try to find macro risks
+    # Try to find macro risks with better patterns
     risk_patterns = [
         r"macro[_\s]*risks?[:\s]*\[([^\]]+)\]",
         r"risks?[:\s]*\[([^\]]+)\]",
         r"risks?[:\s]*[\"']([^\"']+)[\"']",
+        r"risk[:\s]*([A-Z][^,\n]+)",
+        r"-\s*([A-Z][^,\n]+)",  # Bullet points
+        r"\d+\.\s*([A-Z][^,\n]+)",  # Numbered lists
     ]
     
     for pattern in risk_patterns:
         matches = re.findall(pattern, response, re.IGNORECASE)
         for match in matches:
-            # Split by commas and clean up
-            risks = [risk.strip().strip('"\'') for risk in match.split(',')]
-            result["macro_risks"].extend([r for r in risks if r])
+            if ',' in match:
+                # Split by commas and clean up
+                risks = [risk.strip().strip('"\'') for risk in match.split(',')]
+                result["macro_risks"].extend([r for r in risks if r and len(r) > 3])
+            else:
+                # Single risk
+                clean_risk = match.strip().strip('"\'')
+                if clean_risk and len(clean_risk) > 3:
+                    result["macro_risks"].append(clean_risk)
     
     return result
 
@@ -276,7 +285,7 @@ def format_all_categories_for_prompt(categories: Dict) -> str:
     
     return text
 
-def analyze_text(model, tokenizer, unified: bool, categories: Dict, text: str) -> Dict:
+def analyze_text(model, tokenizer, unified: bool, categories: Dict, text: str, force_type: str = None) -> Dict:
     """
     Analyze text using the fine-tuned model.
     
@@ -293,21 +302,22 @@ def analyze_text(model, tokenizer, unified: bool, categories: Dict, text: str) -
     try:
         import torch
         
-        # For unified models, we need to first determine if this is a risk or PII text
-        if unified:
-            # First, determine if this is a risk finding or PII text
+        # Determine analysis type
+        if force_type:
+            # Use forced type
+            text_type = force_type
+        elif unified:
+            # Auto-detect for unified models
             text_type = detect_text_type(model, tokenizer, categories, text)
-            if text_type == "risk":
-                return analyze_risk(model, tokenizer, categories, text)
-            else:  # text_type == "pii"
-                return analyze_pii(model, tokenizer, categories, text)
         else:
-            # For backward compatibility with task-specific models
-            task_type = categories.get('task_type', 'risk')
-            if task_type == 'risk':
-                return analyze_risk(model, tokenizer, categories, text)
-            else:  # task_type == 'pii'
-                return analyze_pii(model, tokenizer, categories, text)
+            # Use task type for task-specific models
+            text_type = categories.get('task_type', 'risk')
+        
+        # Analyze based on determined type
+        if text_type == "risk":
+            return analyze_risk(model, tokenizer, categories, text)
+        else:  # text_type == "pii"
+            return analyze_pii(model, tokenizer, categories, text)
         
     except Exception as e:
         print(f"Error during analysis: {str(e)}")
@@ -320,58 +330,42 @@ def analyze_text(model, tokenizer, unified: bool, categories: Dict, text: str) -
 def detect_text_type(model, tokenizer, categories: Dict, text: str) -> str:
     """
     Detect whether the text is a security risk finding or text with potential PII.
-    
-    Args:
-        model: The loaded model
-        tokenizer: The tokenizer for the model
-        categories: Dictionary of categories
-        text: The text to analyze
-        
-    Returns:
-        String indicating the text type: 'risk' or 'pii'
+    Simple keyword-based detection for better reliability.
     """
-    import torch
+    text_lower = text.lower()
     
-    # Format the categories
-    categories_text = format_all_categories_for_prompt(categories)
-    
-    # Create an enhanced prompt to detect the text type
-    messages = [
-        {
-            "role": "system",
-            "content": f"You are a triple-specialized expert in cybersecurity risk analysis, data privacy (PII detection), and database schema privacy analysis. Your first task is to determine whether the given input represents:\n1. A security risk finding that needs risk categorization\n2. Text that potentially contains personally identifiable information (PII) requiring privacy classification\n3. A DDL (Data Definition Language) statement that needs database schema privacy analysis\n\nBelow are the standardized categories you must use for reference:\n\n{categories_text}\n\nSecurity risk findings typically describe vulnerabilities, threats, or weaknesses in systems, processes, or controls that could be exploited, lead to unauthorized access, or otherwise impact security objectives.\n\nText with PII typically contains personal identifiers like names, contact information, IDs, or sensitive personal data that requires protection based on privacy regulations.\n\nDDL statements are SQL commands like CREATE TABLE, ALTER TABLE that define database schemas and may indicate what types of PII data will be stored."
-        },
-        {
-            "role": "user",
-            "content": f"Please analyze the following input and determine if it is:\n1. A security risk finding that requires risk categorization\n2. Text that potentially contains PII requiring privacy classification\n3. A DDL statement that requires database schema privacy analysis\n\nInput to analyze:\n{text}\n\nIs this a security risk finding, text with potential PII, or a DDL statement?"
-        }
+    # Security risk keywords
+    risk_keywords = [
+        'vulnerability', 'exploit', 'attack', 'breach', 'security', 'unauthorized', 
+        'malware', 'phishing', 'injection', 'xss', 'csrf', 'authentication',
+        'authorization', 'encryption', 'patch', 'firewall', 'intrusion',
+        'threat', 'risk', 'compliance', 'audit', 'control', 'access control'
     ]
     
-    # Create inputs and move to same device as model
-    formatted_prompt = format_chat_messages(messages, tokenizer)
-    inputs = prepare_inputs_for_model(tokenizer, formatted_prompt, model)
+    # PII keywords  
+    pii_keywords = [
+        'name', 'email', 'phone', 'address', 'ssn', 'social security',
+        'credit card', 'bank account', 'passport', 'driver license',
+        'customer', 'patient', 'employee', 'personal', 'private',
+        'confidential', 'sensitive', 'dob', 'date of birth'
+    ]
     
-    # Generate the response
-    with torch.no_grad():
-        outputs = model.generate(
-            input_ids=inputs["input_ids"],
-            attention_mask=inputs.get("attention_mask"),
-            max_new_tokens=50,
-            temperature=0.1,
-            top_p=0.9,
-            do_sample=True,
-            pad_token_id=tokenizer.eos_token_id,
-            eos_token_id=tokenizer.eos_token_id
-        )
+    # Count keyword matches
+    risk_score = sum(1 for keyword in risk_keywords if keyword in text_lower)
+    pii_score = sum(1 for keyword in pii_keywords if keyword in text_lower)
     
-    response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-    
-    # Check if the response indicates this is a risk finding or PII text
-    response = response.lower()
-    if "security risk" in response or "risk finding" in response or "vulnerability" in response or "categorization" in response:
-        return "risk"
-    else:
+    # Simple heuristic: if text mentions specific personal data, it's likely PII
+    if any(word in text_lower for word in ['ssn', 'social security', 'credit card', 'bank account', 'passport']):
         return "pii"
+    
+    # If it has more risk keywords, classify as risk
+    if risk_score > pii_score:
+        return "risk"
+    elif pii_score > 0:
+        return "pii"
+    else:
+        # Default to risk if unclear
+        return "risk"
 
 def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
     """Analyze text as a security risk finding."""
@@ -383,7 +377,7 @@ def analyze_risk(model, tokenizer, categories: Dict, text: str) -> Dict:
         messages = [
             {
                 "role": "user",
-                "content": f"Analyze this security risk finding and categorize it:\n\n{categories_text}\n\nSecurity Risk Finding:\n{text}\n\nProvide JSON response:\n{{\n  \"l2_category\": \"X. Category Name\",\n  \"macro_risks\": [\"Risk 1\", \"Risk 2\"]\n}}\n\nSelect ONE L2 category and relevant macro risks from that category."
+                "content": f"Analyze this security risk finding:\n\n{categories_text}\n\nSecurity Risk Finding:\n{text}\n\nStep 1: Select ONE L2 category that best matches this finding\nStep 2: Select 1-3 macro risks from that L2 category that apply\n\nReturn JSON:\n{{\n  \"l2_category\": \"X. Category Name\",\n  \"macro_risks\": [\"Specific Risk 1\", \"Specific Risk 2\"]\n}}\n\nIMPORTANT: Always include specific macro risks from the selected L2 category."
             }
         ]
         
@@ -510,7 +504,7 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
         "parsing_method": "text_fallback"
     }
 
-def batch_analyze(model, tokenizer, unified: bool, categories: Dict, texts: List[str]) -> List[Dict]:
+def batch_analyze(model, tokenizer, unified: bool, categories: Dict, texts: List[str], force_type: str = None) -> List[Dict]:
     """
     Analyze multiple texts using the fine-tuned model.
     
@@ -527,7 +521,7 @@ def batch_analyze(model, tokenizer, unified: bool, categories: Dict, texts: List
     results = []
     
     for i, text in enumerate(tqdm(texts, desc="Analyzing texts")):
-        result = analyze_text(model, tokenizer, unified, categories, text)
+        result = analyze_text(model, tokenizer, unified, categories, text, force_type)
         result["input_text"] = text
         results.append(result)
         
@@ -660,6 +654,7 @@ Examples:
     
     parser.add_argument("--output", type=str, help="Path to save the results (JSON format)")
     parser.add_argument("--batch-size", type=int, default=10, help="Number of texts to process before showing progress")
+    parser.add_argument("--force-type", type=str, choices=['risk', 'pii'], help="Force analysis as specific type (risk or pii)")
     
     args = parser.parse_args()
     
@@ -683,7 +678,9 @@ Examples:
     # Process individual text
     if text:
         print(f"Analyzing text: {text}")
-        result = analyze_text(model, tokenizer, unified, categories, text)
+        if args.force_type:
+            print(f"Forcing analysis as: {args.force_type}")
+        result = analyze_text(model, tokenizer, unified, categories, text, args.force_type)
         result["input_text"] = text
         
         # Pretty print the result
@@ -722,7 +719,9 @@ Examples:
         
         if texts:
             print(f"Found {len(texts)} texts to process")
-            batch_results = batch_analyze(model, tokenizer, unified, categories, texts)
+            if args.force_type:
+                print(f"Forcing all analysis as: {args.force_type}")
+            batch_results = batch_analyze(model, tokenizer, unified, categories, texts, args.force_type)
             results.extend(batch_results)
             
             # Print summary
