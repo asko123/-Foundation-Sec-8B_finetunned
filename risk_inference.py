@@ -181,18 +181,67 @@ def parse_pii_response_as_text(response: str) -> Dict:
             result["success"] = True
             break
     
-    # Try to find PII types
+    # Try to find PII types with better patterns
     pii_patterns = [
         r"pii[_\s]*types?[:\s]*\[([^\]]+)\]",
         r"types?[:\s]*\[([^\]]+)\]",
+        r"pii[_\s]*types?[:\s]*([^,\n]+)",
+        r"types?[:\s]*([^,\n]+)",
+        r"including\s+([^,\n]+)",
+        r"contains?\s+([^,\n]+)",
+        r"-\s*([A-Z][^,\n]+)",  # Bullet points
+        r":\s*([A-Z][^,\n]+)",  # Colon followed by types
     ]
     
+    # Also look for specific PII type keywords in the response
+    pii_keywords = {
+        'SSN': ['ssn', 'social security', 'social_security'],
+        'Name': ['name', 'names'],
+        'Email': ['email', 'e-mail', 'mail'],
+        'Phone': ['phone', 'telephone', 'mobile', 'cell'],
+        'Address': ['address', 'location'],
+        'Financial': ['credit card', 'bank account', 'financial'],
+        'Health': ['medical', 'health', 'patient'],
+        'Credentials': ['password', 'credential'],
+        'National ID': ['passport', 'driver license', 'national id']
+    }
+    
+    # Extract using patterns
     for pattern in pii_patterns:
         matches = re.findall(pattern, response, re.IGNORECASE)
         for match in matches:
-            types = [pii_type.strip().strip('"\'') for pii_type in match.split(',')]
-            result["pii_types"].extend([t for t in types if t])
+            if ',' in match:
+                types = [pii_type.strip().strip('"\'') for pii_type in match.split(',')]
+                result["pii_types"].extend([t for t in types if t and len(t) > 2])
+            else:
+                clean_type = match.strip().strip('"\'')
+                if clean_type and len(clean_type) > 2:
+                    result["pii_types"].append(clean_type)
     
+    # Extract using keyword matching
+    response_lower = response.lower()
+    for pii_type, keywords in pii_keywords.items():
+        if any(keyword in response_lower for keyword in keywords):
+            if pii_type not in result["pii_types"]:
+                result["pii_types"].append(pii_type)
+    
+    # Clean up and deduplicate results
+    valid_pii_types = ['SSN', 'Name', 'Email', 'Phone', 'Address', 'Financial', 'Health', 'Credentials', 'National ID', 'DOB', 'Customer ID']
+    cleaned_types = []
+    
+    for pii_type in result["pii_types"]:
+        # Check if it's a valid PII type or contains valid PII type
+        pii_type_clean = pii_type.strip()
+        if pii_type_clean in valid_pii_types:
+            if pii_type_clean not in cleaned_types:
+                cleaned_types.append(pii_type_clean)
+        else:
+            # Check if any valid PII type is mentioned in this text
+            for valid_type in valid_pii_types:
+                if valid_type.lower() in pii_type_clean.lower() and valid_type not in cleaned_types:
+                    cleaned_types.append(valid_type)
+    
+    result["pii_types"] = cleaned_types
     return result
 
 def format_chat_messages(messages: List[Dict], tokenizer) -> str:
@@ -453,7 +502,7 @@ def analyze_pii(model, tokenizer, categories: Dict, text: str) -> Dict:
     messages = [
         {
             "role": "user",
-            "content": f"Analyze this text for PII:\n\n{categories_text}\n\nText to analyze:\n{text}\n\nProvide JSON response:\n{{\n  \"pc_category\": \"PC0/PC1/PC3\",\n  \"pii_types\": [\"Type1\", \"Type2\"]\n}}\n\nUse highest sensitivity rule: PC3 > PC1 > PC0."
+            "content": f"Analyze this text for PII:\n\n{categories_text}\n\nText to analyze:\n{text}\n\nStep 1: Identify any PII present (SSN, Name, Email, Phone, etc.)\nStep 2: Select protection category using highest sensitivity rule\n\nReturn JSON:\n{{\n  \"pc_category\": \"PC0 or PC1 or PC3\",\n  \"pii_types\": [\"SSN\", \"Phone\"]\n}}\n\nIMPORTANT: Always include specific PII types found."
         }
     ]
     

@@ -1,0 +1,1 @@
+Customer database contains: John Doe, SSN: 123-45-6789, Phone: 555-0123
